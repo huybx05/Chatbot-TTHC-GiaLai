@@ -1,0 +1,4 @@
+top_k: 20
+rerank_top_n: 5
+index_name: administrative_procedure_chunks
+collection_name: administrative_procedure_chunks

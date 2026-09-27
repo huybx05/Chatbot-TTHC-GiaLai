@@ -1,0 +1,42 @@
+[project]
+name = "tra-cuu-tthc"
+version = "0.1.0"
+description = "Chatbot AI hỗ trợ tư vấn, tra cứu Thủ tục hành chính trên Cổng Dịch vụ công Quốc gia."
+readme = "README.md"
+authors = [
+    { name = "Huy Bui", email = "huybuixuan248@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "elasticsearch[async]>=9.5.1",
+    "fastapi[standard-no-fastapi-cloud-cli]>=0.141.1",
+    "langgraph>=1.2.11",
+    "neo4j>=6.3.1",
+    "openai>=3.14.1",
+    "opendataloader-pdf>=2.5.8",
+    "openpyxl>=3.1.5",
+    "pandas>=3.0.6",
+    "psycopg[binary]>=3.3.5",
+    "pydantic-settings>=2.15.0",
+    "pyyaml>=6.0.3",
+    "qdrant-client>=1.19.0",
+    "sqlalchemy>=2.0.54",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "ruff>=0.12.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+src = ["backend", "data_pipeline", "evaluation", "scripts"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

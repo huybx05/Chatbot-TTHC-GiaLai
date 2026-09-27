@@ -1,0 +1,5 @@
+embedding:
+  model: TBD
+
+reranker:
+  model: TBD

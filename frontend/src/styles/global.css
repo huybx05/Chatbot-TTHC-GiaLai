@@ -1,0 +1,65 @@
+/*
+ * Nền dùng chung: Tailwind 4 + font icon local + token màu.
+ *
+ * Bộ token lấy nguyên giá trị từ màn hình "đang chat" của bản thiết kế gốc
+ * (màn đầy đủ token nhất) và áp dụng thống nhất cho cả 3 màn hình client.
+ * Không đổi giá trị màu nào.
+ */
+
+@import "tailwindcss";
+@import "material-symbols/outlined.css";
+
+@theme {
+  /* Nền và bề mặt */
+  --color-main-bg: #faf7f2;
+  --color-sidebar-bg: #f2ece4;
+  --color-card-surface: #fffdf9;
+  --color-secondary-surface: #f7f1ea;
+
+  /* Màu chủ đạo */
+  --color-primary: #a54e2d;
+  --color-primary-hover: #8f4225;
+  --color-primary-soft: #f0ddd2;
+  --color-secondary-accent: #d4a23a;
+
+  /* Chữ */
+  --color-text-primary: #2e2e2e;
+  --color-text-secondary: #6a625b;
+
+  /* Viền */
+  --color-border-color: #e6ddd2;
+  --color-border-strong: #d8cec3;
+
+  /* Trạng thái */
+  --color-user-bubble: #f3ede6;
+  --color-hover-item: #ece3d9;
+  --color-danger: #b2463b;
+  --color-danger-hover: #96382e;
+  --color-danger-surface: #fbefed;
+
+  /* Bo góc bổ sung ngoài thang mặc định */
+  --radius-2xl: 0.875rem;
+
+  --font-sans: "Inter", sans-serif;
+  --font-body: "Inter", sans-serif;
+}
+
+@layer base {
+  html,
+  body {
+    margin: 0;
+    padding: 0;
+  }
+
+  body {
+    overscroll-behavior: none;
+    font-family: var(--font-body);
+    background-color: var(--color-main-bg);
+    color: var(--color-text-primary);
+  }
+
+  /* Bản thiết kế gốc ẩn thanh cuộn */
+  ::-webkit-scrollbar {
+    display: none;
+  }
+}

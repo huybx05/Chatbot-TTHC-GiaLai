@@ -1,0 +1,51 @@
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.uvcache/
+
+# Node / frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Data and generated artifacts
+*.pdf
+data/raw/*
+data/processed/*
+data/failed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/failed/.gitkeep
+danh_sach_tthc_bo_tinh_xa.json
+danh_sach_tthc_bo_tinh_xa.xlsx
+frontend/logo.jpg
+frontend/public/logo.jpg
+
+# Notebooks
+notebooks/.ipynb_checkpoints/
+
+# Local tooling / scratch
+.codegraph/
+.tmp_design/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
