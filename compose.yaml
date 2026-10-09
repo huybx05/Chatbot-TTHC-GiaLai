@@ -1,51 +1,56 @@
-name: tra-cuu-tthc
+name: chatbot-tthc-gialai
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    profiles: ["infra"]
-    environment:
-      POSTGRES_DB: tthc
-      POSTGRES_USER: tthc
-      POSTGRES_PASSWORD: tthc
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres-data:/var/lib/postgresql/data
-
   elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
-    profiles: ["infra"]
+    image: docker.elastic.co/elasticsearch/elasticsearch:9.5.4
+    container_name: elasticsearch
     environment:
-      discovery.type: single-node
-      xpack.security.enabled: "false"
-      ES_JAVA_OPTS: -Xms512m -Xmx512m
+      # single-node: tắt bootstrap checks, đủ cho môi trường luận văn
+      - discovery.type=single-node
+      # Tắt bảo mật cho môi trường dev. BẬT LẠI khi lên VPS.
+      - xpack.security.enabled=false
+      - xpack.security.http.ssl.enabled=false
+      # Heap 1GB đủ cho ~2.000 thủ tục. Không đặt quá 50% RAM máy.
+      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      - bootstrap.memory_lock=true
+      - http.cors.enabled=true
+      - http.cors.allow-origin="*"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
     ports:
       - "9200:9200"
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    restart: unless-stopped
 
   qdrant:
-    image: qdrant/qdrant:v1.11.0
-    profiles: ["infra"]
+    image: qdrant/qdrant:v1.19.0
+    container_name: qdrant
     ports:
-      - "6333:6333"
+      - "6333:6333"   # REST API
+      - "6334:6334"   # gRPC
     volumes:
       - qdrant-data:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    restart: unless-stopped
 
-  neo4j:
-    image: neo4j:5-community
-    profiles: ["infra"]
-    environment:
-      NEO4J_AUTH: neo4j/password
-    ports:
-      - "7474:7474"
-      - "7687:7687"
-    volumes:
-      - neo4j-data:/data
 
 volumes:
-  postgres-data:
   elasticsearch-data:
   qdrant-data:
-  neo4j-data:

@@ -11,9 +11,11 @@
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.3.3",
+    "@xyflow/react": "^12.12.0",
     "material-symbols": "^0.47.3",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",
+    "react-force-graph-2d": "^1.29.2",
     "react-router-dom": "^7.18.4",
     "tailwindcss": "^4.3.3"
   },

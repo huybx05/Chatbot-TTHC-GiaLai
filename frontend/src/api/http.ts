@@ -11,7 +11,7 @@ export class ApiError extends Error {
   }
 }
 
-type HttpMethod = "GET" | "POST";
+type HttpMethod = "GET" | "POST" | "PATCH";
 
 export async function request<T>(
   path: string,

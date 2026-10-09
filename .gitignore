@@ -27,25 +27,43 @@ pnpm-debug.log*
 # Data and generated artifacts
 *.pdf
 data/raw/*
+data/json/*
+data/json_normalized/*
+data/data_test/*
 data/processed/*
 data/failed/*
-!data/raw/.gitkeep
+!data/raw/api/
+!data/json/
+!data/json_normalized/
 !data/processed/.gitkeep
 !data/failed/.gitkeep
+
+command.txt
+excel_to_json.py
+prompt_ui.md
+Diagram.drawio
+docs/*
+
+# Danh mục thủ tục và bản trích xuất từ cổng (không commit vì dung lượng lớn)
 danh_sach_tthc_bo_tinh_xa.json
 danh_sach_tthc_bo_tinh_xa.xlsx
+danh_sach_tthc_bo_tinh_xa_edit.xlsx
 frontend/logo.jpg
 frontend/public/logo.jpg
 
 # Notebooks
 notebooks/.ipynb_checkpoints/
 
-# Local tooling / scratch
+#SKILLS
+SKILLS/*
+
+# Local tooling
 .codegraph/
-.tmp_design/
 
 # OS / editor
 .DS_Store
 Thumbs.db
 *.swp
 *.swo
+
+data/*

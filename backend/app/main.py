@@ -3,6 +3,8 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from backend.app.api.admin import router as admin_router
+from backend.app.auth.router import router as auth_router
 from backend.app.config import settings
 
 app = FastAPI(
@@ -19,6 +21,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth_router, prefix=settings.api_v1_prefix)
+app.include_router(admin_router, prefix="/api/admin")
 
 @app.get("/health")
 async def health() -> dict[str, str]:

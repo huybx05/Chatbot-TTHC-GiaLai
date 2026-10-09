@@ -8,7 +8,8 @@ Tối ưu hóa cho dữ liệu hành chính tiếng Việt:
 
 import json
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
+
 import pandas as pd
 
 
@@ -25,9 +26,9 @@ def clean_cell_value(val: Any) -> Any:
 
 
 def convert_tthc_excel_to_json(
-    excel_path: Union[str, Path],
-    json_output_path: Union[str, Path],
-    sheet_name: Union[str, int] = 0,
+    excel_path: str | Path,
+    json_output_path: str | Path,
+    sheet_name: str | int = 0,
 ) -> list[dict[str, Any]]:
     """Đọc file Excel TTHC và xuất ra file JSON có cấu trúc sạch.
 
@@ -74,13 +75,11 @@ def convert_tthc_excel_to_json(
 
 if __name__ == "__main__":
     # --- CẤU HÌNH ĐƯỜNG DẪN TẠI ĐÂY ---
-    INPUT_EXCEL = "danh_sach_tthc_bo_tinh_xa.xlsx"  # Đổi thành tên file excel thực tế của bạn
+    INPUT_EXCEL = "danh_sach_tthc_bo_tinh_xa_edit.xlsx"  # Đổi thành tên file excel thực tế của bạn
     OUTPUT_JSON = "danh_sach_tthc_bo_tinh_xa.json"
 
     # Chạy chuyển đổi
     try:
-        convert_tthc_excel_to_json(
-            excel_path=INPUT_EXCEL, json_output_path=OUTPUT_JSON
-        )
+        convert_tthc_excel_to_json(excel_path=INPUT_EXCEL, json_output_path=OUTPUT_JSON)
     except Exception as e:
         print(f"[!] Có lỗi xảy ra trong quá trình xử lý: {e}")

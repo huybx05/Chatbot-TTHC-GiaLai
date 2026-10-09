@@ -1,0 +1,33 @@
+# Cấu hình crawler TTHC từ API công khai Cổng Dịch vụ công Quốc gia.
+# Giá trị ở đây có thể ghi đè bằng biến môi trường cùng tên (viết hoa, có tiền tố CRAWLER_).
+
+base_url: "https://dichvucong.gov.vn"
+
+# Nghỉ giữa hai request liên tiếp (giây). Giữ >= 1.0 để không gây tải cho cổng.
+delay_seconds: 1.5
+
+# Số thủ tục crawl trong một lần chạy. null = không giới hạn.
+limit: null
+
+# Ghi đè danh mục để test nhanh, ví dụ: ["1.115346", "1.000049"].
+# null = đọc toàn bộ từ file Excel.
+code_filter: null
+
+# Cookie phiên, chỉ cần khi cổng siết truy cập. API hiện công khai.
+# Nên đặt qua biến môi trường DVC_COOKIE thay vì ghi vào file này.
+cookie: ""
+
+# Danh mục thủ tục: nguồn quyết định "cần crawl những gì".
+# File Excel có 15 sheet, mỗi sheet là một Domain Group được lọc sẵn bằng AutoFilter.
+# Mặc định chỉ đọc SHEET ĐẦU TIÊN để kiểm soát từng nhóm một; dùng --sheet để đổi.
+catalog_excel: "danh_sach_tthc_bo_tinh_xa_edit.xlsx"
+catalog_sheet: "first"
+
+# Sheet căn cứ pháp lý, dùng để ghép link cho văn bản được viện dẫn trong phần phí.
+legal_sheet: "CCPL"
+
+paths:
+  raw: "data/raw/api"
+  normalized: "data/json"
+  failed: "data/failed"
+  manifest: "data/processed/procedure_manifest.csv"

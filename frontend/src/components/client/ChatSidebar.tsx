@@ -114,16 +114,6 @@ export default function ChatSidebar({
             </div>
           </nav>
         </div>
-
-        <div className="flex flex-col gap-2 border-t border-border-color pt-3">
-          <div className="flex items-center justify-between px-2 py-1 text-[13px] text-text-secondary">
-            <span className="flex items-center gap-1.5">
-              <span className="material-symbols-outlined text-[16px] text-primary">support_agent</span>
-              Hỗ trợ pháp lý 24/7
-            </span>
-            <span className="inline-block h-2 w-2 rounded-full bg-primary" />
-          </div>
-        </div>
       </aside>
     </>
   );
