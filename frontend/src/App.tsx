@@ -5,11 +5,13 @@ import AdminLayout from "./components/layout/AdminLayout.tsx";
 import ClientLayout from "./components/layout/ClientLayout.tsx";
 import AdminLoginPage from "./pages/admin/AdminLoginPage.tsx";
 import ConversationsPage from "./pages/admin/ConversationsPage.tsx";
+import CostsPage from "./pages/admin/CostsPage.tsx";
 import DataAndChunkPage from "./pages/admin/DataAndChunkPage.tsx";
 import FaqPage from "./pages/admin/FaqPage.tsx";
 import GraphPage from "./pages/admin/GraphPage.tsx";
 import OperationsPage from "./pages/admin/OperationsPage.tsx";
 import OverviewPage from "./pages/admin/OverviewPage.tsx";
+import RagPlaygroundPage from "./pages/admin/RagPlaygroundPage.tsx";
 import ChatPage from "./pages/client/ChatPage.tsx";
 
 /**
@@ -44,12 +46,13 @@ export default function App() {
         <Route path="data" element={<DataAndChunkPage />} />
         <Route path="faq" element={<FaqPage />} />
         <Route path="graph" element={<GraphPage />} />
+        <Route path="retrieval" element={<RagPlaygroundPage />} />
         <Route path="operations" element={<OperationsPage />} />
         <Route path="conversations" element={<ConversationsPage />} />
+        <Route path="costs" element={<CostsPage />} />
 
         <Route path="data-quality" element={<Navigate to="/admin/data" replace />} />
         <Route path="pipeline" element={<Navigate to="/admin/operations" replace />} />
-        <Route path="retrieval" element={<Navigate to="/admin/operations" replace />} />
         <Route path="qa" element={<Navigate to="/admin/faq" replace />} />
         <Route path="rag" element={<Navigate to="/admin/operations" replace />} />
         <Route path="logs" element={<Navigate to="/admin/operations" replace />} />

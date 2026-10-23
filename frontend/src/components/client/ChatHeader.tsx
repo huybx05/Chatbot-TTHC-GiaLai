@@ -12,9 +12,8 @@ export default function ChatHeader({ onOpenSidebar }: { onOpenSidebar: () => voi
           <span className="material-symbols-outlined">menu</span>
         </button>
         <div className="flex items-center gap-2">
-          <span className="material-symbols-outlined text-[22px] text-primary">verified</span>
           <span className="text-[17px] font-semibold text-text-primary">
-            Hệ thống Hướng dẫn Thủ tục Hành chính Quốc gia
+            Hệ Thống Hỗ Trợ Tra Cứu Thủ Tục Hành Chính Tại Tỉnh Gia Lai
           </span>
         </div>
       </div>

@@ -256,13 +256,13 @@ def index_qdrant_chunks(chunks: list[dict[str, Any]], recreate: bool = False) ->
 
 
 def faq_embedding_text(faq: dict[str, Any]) -> str:
+    tags = ", ".join(faq.get("tags") or [])
     return "\n".join(
         [
             f"Câu hỏi: {faq['question']}",
-            f"Câu trả lời: {faq['answer']}",
             f"Thủ tục: {faq.get('procedure_name') or ''}",
-            f"Mã thủ tục: {faq.get('procedure_code') or ''}",
             f"Lĩnh vực: {faq.get('source_field') or ''}",
+            f"Từ khóa: {tags}",
         ]
     )
 

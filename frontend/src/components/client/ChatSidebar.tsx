@@ -63,9 +63,9 @@ export default function ChatSidebar({
             />
             <div className="flex min-w-0 flex-col leading-tight">
               <span className="truncate text-[15px] font-semibold text-text-primary">
-                ChatTTHC
+                Gia Lai Chatbot
               </span>
-              <span className="truncate text-[12px] text-text-secondary">Hỗ trợ tra cứu các TTHC</span>
+              {/* <span className="truncate text-[12px] text-text-secondary">Hỗ trợ tra cứu các TTHC tỉnh Gia Lai</span> */}
             </div>
           </div>
 

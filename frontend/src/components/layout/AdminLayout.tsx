@@ -8,7 +8,9 @@ const NAV_ITEMS = [
   { to: "/admin/data", label: "Dữ liệu PostgreSQL", icon: "database", end: false },
   { to: "/admin/faq", label: "FAQ", icon: "quiz", end: false },
   { to: "/admin/graph", label: "Neo4j Graph", icon: "hub", end: false },
-  { to: "/admin/conversations", label: "Hội thoại", icon: "forum", end: false },
+  { to: "/admin/retrieval", label: "Kiểm thử truy xuất", icon: "manage_search", end: false },
+  { to: "/admin/conversations", label: "Log hội thoại", icon: "forum", end: false },
+  { to: "/admin/costs", label: "Quản lý chi phí", icon: "payments", end: false },
   { to: "/admin/operations", label: "Vận hành", icon: "settings_suggest", end: false },
 ];
 
@@ -45,12 +47,13 @@ export default function AdminLayout({ onLogout }: AdminLayoutProps) {
       <aside className="hidden border-r border-border-color bg-sidebar-bg lg:sticky lg:top-0 lg:flex lg:h-screen lg:flex-col">
         <div className="border-b border-border-color px-5 py-5">
           <div className="flex items-center gap-3">
-            <div className="flex size-10 items-center justify-center rounded-lg bg-primary-soft text-primary">
-              <span className="material-symbols-outlined text-[24px]">admin_panel_settings</span>
-            </div>
+            <img
+              src="/logo.png"
+              alt="Logo TTHC AI Monitor"
+              className="size-10 rounded-lg border border-border-color bg-white object-cover shadow-sm"
+            />
             <div>
-              <h1 className="text-[15px] font-bold leading-5">TTHC AI Monitor</h1>
-              <p className="text-xs text-text-secondary">RAG & Data Core v1</p>
+              <h1 className="text-[15px] font-bold leading-5">Gia Lai Chatbot Admin</h1>
             </div>
           </div>
         </div>

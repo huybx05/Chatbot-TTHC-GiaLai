@@ -6,6 +6,7 @@ interface WelcomeViewProps {
   prefill: string;
   onPickSuggestion: (text: string) => void;
   onSend: (text: string) => void;
+  isSending?: boolean;
 }
 
 /** Màn hình chào khi chưa có hội thoại. */
@@ -14,6 +15,7 @@ export default function WelcomeView({
   prefill,
   onPickSuggestion,
   onSend,
+  isSending = false,
 }: WelcomeViewProps) {
   return (
     <div className="mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center px-6 py-10">
@@ -24,17 +26,17 @@ export default function WelcomeView({
           className="mx-auto mb-5 h-14 w-14 rounded-2xl border border-border-color bg-white object-cover shadow-sm"
         />
         <h1 className="mb-3 text-center text-[26px] font-bold leading-tight text-text-primary md:text-[28px]">
-          Xin chào! Tôi có thể hỗ trợ bạn về thủ tục hành chính.
+          Xin chào! Tôi có thể hỗ trợ gì cho bạn.
         </h1>
-        <p className="mb-8 max-w-[620px] text-center text-[16px] leading-relaxed text-text-secondary">
-          Hãy nhập câu hỏi về hồ sơ, quy trình, cơ quan giải quyết, thời hạn hoặc lệ phí.
-        </p>
+        {/* <p className="mb-8 max-w-[620px] text-center text-[16px] leading-relaxed text-text-secondary">
+          Hệ thống hỗ trợ tra cứu thủ tục hành chính.
+        </p> */}
 
         <div className="mb-8 w-full text-left">
           <div className="mb-3 flex items-center gap-2 px-1">
             <span className="material-symbols-outlined text-[17px] text-primary">lightbulb</span>
             <span className="text-[13px] font-semibold uppercase tracking-wider text-text-secondary">
-              CÂU HỎI GỢI Ý LIÊN QUAN
+              CÂU HỎI GỢI Ý
             </span>
           </div>
           <div className="flex flex-col gap-2.5">
@@ -57,12 +59,14 @@ export default function WelcomeView({
         <div className="w-full">
           <MessageInput
             prefill={prefill}
-            placeholder="Nhập câu hỏi về thủ tục hành chính..."
+            placeholder="Nhập câu hỏi..."
             onSend={onSend}
+            disabled={isSending}
           />
           <p className="mt-3 text-center text-[13px] leading-normal text-text-secondary">
-            Trợ lý AI cung cấp thông tin tham khảo. Vui lòng đối chiếu với nguồn chính thức và quy
-            định hiện hành.
+            {/* Trợ lý AI chỉ cung cấp thông tin tham khảo. Vui lòng đối chiếu với nguồn chính thức và quy
+            định hiện hành. */}
+            Thông tin chỉ mang tính tham khảo và Vui lòng đối chiếu với nguồn chính thức trước khi thực hiện.
           </p>
         </div>
       </div>

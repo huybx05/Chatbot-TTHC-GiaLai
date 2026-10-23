@@ -46,6 +46,65 @@ FIELD_TO_NODE: tuple[tuple[str, str], ...] = (
     ("ket_qua_xu_ly", "KetQua"),
 )
 
+#: Hậu tố số hiệu văn bản → cơ quan ban hành.
+#:
+#: Vì sao phải suy: nguồn dữ liệu **không** có trường "cơ quan ban hành văn bản" (đo được:
+#: ``VanBanPhapLy`` chỉ có 4 property và 1 cạnh vào). Nhưng số hiệu văn bản Việt Nam mang
+#: sẵn cơ quan ban hành ở hậu tố, nên suy được **tất định, 0 token**: đo trên 74 văn bản
+#: của bộ test được **68/74 = 92%**.
+#:
+#: Cạnh sinh ra được đánh ``is_inferred = true`` để tầng trên nói rõ "suy ra từ số hiệu",
+#: không giả vờ đó là dữ liệu nguồn.
+#:
+#: Bảng khai báo, không phải if/else: thêm bộ ngành mới = thêm một dòng.
+DOCUMENT_ISSUER_SUFFIX: tuple[tuple[str, str], ...] = (
+    ("ND CP", "Chính phủ"),
+    ("NQ CP", "Chính phủ"),
+    ("QH", "Quốc hội"),
+    ("UBTVQH", "Ủy ban Thường vụ Quốc hội"),
+    ("QD UBND", "UBND tỉnh"),
+    ("NQ HDND", "Hội đồng nhân dân"),
+    ("NQ HDTND", "Hội đồng nhân dân"),
+    ("TT BYT", "Bộ Y tế"),
+    ("TT BTC", "Bộ Tài chính"),
+    ("TT BTP", "Bộ Tư pháp"),
+    ("TT BXD", "Bộ Xây dựng"),
+    ("TT BLDTBXH", "Bộ Lao động - Thương binh và Xã hội"),
+    ("TT BTNMT", "Bộ Tài nguyên và Môi trường"),
+    ("TT BNN", "Bộ Nông nghiệp và Phát triển nông thôn"),
+    ("TT BCT", "Bộ Công Thương"),
+    ("TT BGTVT", "Bộ Giao thông vận tải"),
+    ("TT BTTTT", "Bộ Thông tin và Truyền thông"),
+    ("TT BKHCN", "Bộ Khoa học và Công nghệ"),
+    ("TT BNV", "Bộ Nội vụ"),
+    ("TT BNG", "Bộ Ngoại giao"),
+    ("TT BQP", "Bộ Quốc phòng"),
+    ("TT BCA", "Bộ Công an"),
+    ("TT BGD", "Bộ Giáo dục và Đào tạo"),
+    ("TT BVHTT", "Bộ Văn hóa, Thể thao và Du lịch"),
+    ("TT BTT", "Bộ Thông tin và Truyền thông"),
+)
+
+
+def document_issuing_agency(document_code: str) -> str | None:
+    """Suy cơ quan ban hành từ hậu tố số hiệu. ``None`` = không suy được.
+
+    So khớp hậu tố **theo thứ tự khai báo** và phải là **tiền tố của hậu tố**, nên
+    ``TT BTTTT`` phải đứng trước ``TT BTT`` (nếu không sẽ cắt nhầm thành Bộ TT&TT cho
+    một văn bản của Bộ Văn hóa). Vì vậy bảng xếp dài trước ngắn sau ở các cặp lồng nhau.
+
+    Ví dụ: ``"41/2023/TT BTC"`` → ``"Bộ Tài chính"``; ``"105/2016/QH13"`` → ``"Quốc hội"``.
+    """
+    if "/" not in document_code:
+        return None
+    duoi = document_code.rsplit("/", 1)[-1].strip().upper()
+    if not duoi:
+        return None
+    for hau_to, co_quan in DOCUMENT_ISSUER_SUFFIX:
+        if duoi.startswith(hau_to):
+            return co_quan
+    return None
+
 #: Bốn vai trò cơ quan — tách thành BỐN cạnh riêng (§4.3b nhóm A).
 AGENCY_FIELDS: tuple[tuple[str, str], ...] = (
     ("co_quan_ban_hanh", "BAN_HANH_BOI"),
@@ -341,6 +400,21 @@ SET e.is_inferred = true
 """
 
 
+#: ``VanBanPhapLy -[:BAN_HANH_BOI]-> CoQuan``, suy từ hậu tố số hiệu.
+#:
+#: ``is_inferred = true`` là thông tin **bắt buộc** phải mang theo, không phải trang trí:
+#: cạnh này không có trong dữ liệu nguồn. Tầng trả lời dựa vào cờ đó để nói "suy ra từ số
+#: hiệu văn bản", thay vì trình bày như dữ liệu gốc.
+CYPHER_DOCUMENT_AGENCY = """
+UNWIND $rows AS r
+MERGE (v:{document} {{run_id: $run_id, key: r.van_ban}})
+MERGE (a:{agency} {{run_id: $run_id, key: r.key}})
+SET a.name = r.name
+MERGE (v)-[e:{rel_type}]->(a)
+SET e.is_inferred = true
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Dựng đồ thị tri thức Neo4j (Giai đoạn 7).")
     ap.add_argument(
@@ -387,6 +461,8 @@ def main(argv: list[str] | None = None) -> int:
     node_rows: dict[tuple[str, str], list[dict]] = defaultdict(list)
     agency_rows: dict[str, list[dict]] = defaultdict(list)
     document_rows: list[dict] = []
+    #: ``VanBanPhapLy -[:BAN_HANH_BOI]-> CoQuan``, suy từ hậu tố số hiệu.
+    document_agency_rows: list[dict] = []
     related_rows: list[dict] = []
 
     for record in records:
@@ -427,6 +503,16 @@ def main(argv: list[str] | None = None) -> int:
             record.get("can_cu_phap_ly") or ""
         ):
             document_rows.append({"thu_tuc": code, "key": document_code, "ten": document_name})
+            # Suy cơ quan ban hành từ hậu tố số hiệu — xem DOCUMENT_ISSUER_SUFFIX.
+            co_quan = document_issuing_agency(document_code)
+            if co_quan:
+                document_agency_rows.append(
+                    {
+                        "van_ban": document_code,
+                        "key": normalize_key(co_quan),
+                        "name": co_quan,
+                    }
+                )
 
         # Cạnh PHỤ: chỉ tên, không mã → đánh cờ is_inferred. Xem CYPHER_RELATED.
         for related_name in split_related_procedures(record.get("thu_tuc_lien_quan")):
@@ -441,6 +527,19 @@ def main(argv: list[str] | None = None) -> int:
     for rel_type, rows in sorted(agency_rows.items()):
         print(f"      CoQuan/{rel_type:18} {len({x['key'] for x in rows}):5}")
     print(f"      {NODE_LEGAL_DOCUMENT:16} {len({x['key'] for x in document_rows}):5}")
+
+    # Cơ quan ban hành văn bản: chỉ in khi suy được, kèm tỉ lệ để biết độ phủ thật.
+    doc_ma = {x["key"] for x in document_rows}
+    doc_co_co_quan = {x["van_ban"] for x in document_agency_rows}
+    print(
+        f"      Văn bản suy được cơ quan ban hành: "
+        f"{len(doc_co_co_quan)}/{len(doc_ma)}"
+        + (
+            f" = {len(doc_co_co_quan) / len(doc_ma):.0%}"
+            if doc_ma
+            else ""
+        )
+    )
 
     print("\n  Cạnh:")
     for (_label, rel_type), rows in sorted(node_rows.items(), key=lambda kv: kv[1].__len__()):
@@ -535,6 +634,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(
                     f"  ✅ {NODE_LEGAL_DOCUMENT + ' [:CAN_CU_PHAP_LY]':26} "
                     f"{len(document_rows):5} dòng"
+                )
+
+            if document_agency_rows:
+                session.run(
+                    CYPHER_DOCUMENT_AGENCY.format(
+                        document=NODE_LEGAL_DOCUMENT,
+                        agency=NODE_AGENCY,
+                        rel_type="BAN_HANH_BOI",
+                    ),
+                    rows=document_agency_rows,
+                    run_id=args.run_id,
+                ).consume()
+                print(
+                    f"  ✅ {NODE_LEGAL_DOCUMENT + ' [:BAN_HANH_BOI]':26} "
+                    f"{len(document_agency_rows):5} dòng (is_inferred = true)"
                 )
 
             if related_rows:

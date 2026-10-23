@@ -1,68 +1,336 @@
 # HƯỚNG DẪN KIẾN TRÚC & TRIỂN KHAI DỰ ÁN TOÀN DIỆN (PROJECT GUIDE V4.1)
+> **Cập nhật trạng thái: 2026-10-22.** Đọc §0.5 trước khi sửa mã.
 ## Đề tài: Ứng dụng RAG và Knowledge Graph để xây dựng Chatbot AI hỗ trợ tra cứu Thủ tục hành chính tại tỉnh Gia Lai
 
 ---
 
-## 0. NHỮNG THAY ĐỔI CHÍNH TRONG V4.1
+## 0. BỐI CẢNH, MỤC TIÊU, PHẠM VI & TRẠNG THÁI
 
-Bản V4.1 cập nhật **chiến lược thu thập dữ liệu** so với V4, sau khi khảo sát thực tế nguồn dữ liệu:
+Phần này mô tả **dự án cần làm gì** và **đang ở đâu**. Các mục 0.1–0.4 là bối cảnh; **0.5 là trạng thái hiện tại** và là phần phải đọc trước khi sửa mã.
 
-### 0.1. Chuyển từ "bóc tách PDF" sang "khai thác API công khai"
-* **V4 cũ:** Tải PDF thủ công → OpenDataLoader PDF → Markdown → parser bóc tách theo nhãn.
-* **V4.1:** Crawl trực tiếp qua **API công khai** của Cổng Dịch vụ công Quốc gia → JSON có cấu trúc sẵn.
-* **Lý do:** Bóc tách PDF phải qua **hai tầng suy đoán liên tiếp** (đoán cấu trúc bảng từ PDF, rồi đoán đề mục từ Markdown), trong khi API **đã phân loại sẵn** nội dung thành các trường có cấu trúc. Bỏ được một tầng suy đoán là bỏ được một nguồn sai số.
-* **Lợi ích định lượng:**
-  * Bảng thành phần hồ sơ trả về **mảng object** có số lượng bản chính/bản sao, không bị làm phẳng thành text.
-  * Phí và thời hạn trả về **trường riêng** thay vì nằm lẫn trong khối văn bản.
-  * Mỗi thủ tục có **`formality_id` (UUID) và `detail_url`** để dẫn nguồn, thay vì phải ghép URL từ manifest.
-    * **Ngoại lệ — 4 TTHC liên thông:** cổng dùng đường dẫn khác và định danh **ID số**, không phải UUID. `detail_url` dạng `https://dichvucong.gov.vn/thu-tuc-hanh-chinh-lien-thong/<ID số>` (ví dụ `234778`, `341088`, `341089`, `420163`); `formality_id` **để rỗng** vì cổng không công bố UUID cho nhóm này, và endpoint chi tiết của nhóm liên thông bị WAF chặn. Xem `docs/crawler.md` để biết đầy đủ.
-  * Không lẫn rác giao diện (menu, dropdown "-- Chọn Tỉnh/ Thành phố --").
-  * Không cần Java, không cần Google Colab, không cần trình duyệt headless.
+### 0.1. Mục tiêu của đề tài
 
-### 0.2. Phát hiện về chất lượng dữ liệu phí (đưa vào chương thực nghiệm)
-Khảo sát ban đầu trên 10 thủ tục cho thấy Cổng DVC **không công bố mức phí cụ thể cho phần lớn thủ tục**:
+Xây dựng chatbot tiếng Việt tra cứu **thủ tục hành chính (TTHC) tỉnh Gia Lai**, kết hợp:
 
-| Loại phí | Tỷ lệ khảo sát ban đầu | Ý nghĩa |
+* **RAG** cho nội dung hướng dẫn (hồ sơ, trình tự, thời hạn, phí, kết quả, căn cứ pháp lý);
+* **Knowledge Graph** cho quan hệ (cơ quan ban hành/thực hiện/phối hợp/ủy quyền, cấp, lĩnh vực, văn bản);
+* **Workflow tất định** để quyết định tra gì, không để mô hình tự do chọn công cụ.
+
+Mục tiêu chất lượng: trả lời **đúng nguồn, có `detail_url`**, và **không bịa** khi dữ liệu không có.
+
+### 0.2. Phạm vi dữ liệu hiện tại
+
+| Hạng mục | Hiện tại (2026-10-22) |
+|---|---|
+| Danh mục mục tiêu | 1.955 TTHC áp dụng tại Gia Lai (168 lĩnh vực nguồn, 15 nhóm) |
+| Bộ đang nạp và đo | **49 TTHC** (dùng để phát triển, đo và làm luận văn) |
+| Nguồn | API công khai Cổng Dịch vụ công Quốc gia (JSON), **không dùng PDF/OCR** |
+| Lưu trữ | PostgreSQL (SSOT) · Neo4j (đồ thị) · Elasticsearch (BM25) · Qdrant (vector) |
+
+> Mở rộng lên 1.955 TTHC là việc dữ liệu, không phải viết lại kiến trúc. Mọi ngưỡng phải đo trên
+> bộ đang có và ghi rõ quy mô khi báo cáo.
+
+### 0.3. Nguyên tắc thiết kế
+
+1. **Tất định ở phần quyết định.** LLM chỉ làm hai việc: hiểu câu hỏi thành `QuestionFrame`, và
+   viết câu trả lời từ bằng chứng. Router/planner/executor là mã nguồn.
+2. **Bằng chứng trước câu chữ.** Không có evidence thì không trả lời; mỗi khẳng định phải truy
+   ngược được về một mục ngữ cảnh và `detail_url`.
+3. **Ba trạng thái thiếu phải khác nhau:** `không có dữ liệu` ≠ `nguồn đang lỗi` ≠ `chưa hỗ trợ`.
+4. **Ưu tiên không trả lời hơn trả lời sai.** Hỏi lại chỉ khi có lựa chọn thật; từ chối phải nói
+   rõ thiếu gì.
+5. **Không hardcode cụm từ để định tuyến/phân loại.** Ngưỡng và từ phân biệt phải suy ra từ dữ
+   liệu (score, IDF, df) hoặc từ schema.
+6. **Không dựng lại A0** (identity/profile/case) — đã đo là tệ hơn và đã gỡ.
+
+### 0.4. Chính sách độ tin cậy dữ liệu
+
+Phí/lệ phí được phân thành **5 loại** và trả lời khác nhau; sentinel `"Không có thông tin"` nghĩa
+là **chưa đăng**, không phải **không có**. Chi tiết và bảng nhận biết ở **§1.2b**; đây là chính
+sách bắt buộc cho bước sinh câu trả lời.
+
+### 0.5. TRẠNG THÁI HIỆN TẠI — cập nhật 2026-10-22 (đọc trước khi sửa bất kỳ file nào)
+
+Đây là phần **bắt buộc đọc đầu tiên** đối với Coding Agent. Nó thay thế các mô tả cũ ở Giai đoạn 13/14 khi hai mục đó khác với mã hiện có.
+
+#### 0.5.1. Hệ thống đang chạy theo kiến trúc nào
+
+Luồng hiện tại (mặc định, đã nối vào `/chat`, `/chat/stream` và `/api/admin/workflow/ask`):
+
+```text
+normalize
+  → ① mã thủ tục bằng regex + PostgreSQL
+  → ② từ điển văn bản pháp lý (RAM)
+  → ③ thực thể đóng (cơ quan / lĩnh vực / cấp / nhóm)
+  → ④ cổng nội dung (hybrid + reranker)
+  → ⑤ Graph phân loại
+  → ⑥ nhúng lười (tối đa một lần mỗi câu)
+  → ⑦ resolver tên thủ tục
+  → ⑧ router (adapter từ QuestionFrame)
+  → ⑨ grounding từng subject mention
+  → ⑩ planner tất định (capability matrix)
+  → ⑪ executor: chạy task song song + coverage từng ý + fallback tối đa 1 lần
+  → ⑫ answer contract + kiểm chứng hậu sinh + retry 1 lần + fallback tất định
+  → ⑬ tổng hợp câu trả lời
+```
+
+**Điểm khác biệt cốt lõi so với V4.1 gốc:** không còn "router đoán một nhánh rồi nhánh đó tự quyết định". Hiểu câu hỏi được tách thành ba tầng tất định:
+
+1. **QuestionFrame** — LLM semantic parser trả JSON có schema, không trả nhãn nhánh.
+2. **Grounding + Planner** — mã nguồn quyết định subject nào đã xác định, ý nào hỗ trợ được, dùng tool nào.
+3. **Executor** — chạy đúng plan, gắn bằng chứng theo từng ý, tính coverage, không để lỗi một nguồn làm mất nguồn khác.
+
+#### 0.5.2. File nào là "mã mới" của Giai đoạn 13
+
+| File | Vai trò |
+|---|---|
+| `backend/app/workflow/question_frame.py` | Schema `QuestionFrame` v1.0: `QuestionScope`, `SubjectType`, `RequestOperation`, `Facet` (20 giá trị), `ConstraintType`, `AmbiguityKind`; `SubjectMention`, `QuestionRequest`, `QuestionFrame`. |
+| `backend/app/workflow/question_parser.py` | Gọi LLM sinh frame + validate JSON + cache + `to_router_decision()` (adapter frame → 3 nhánh cũ). |
+| `backend/app/rag/grounding.py` | `ground_frame()`: mã đã xác thực → mã không tồn tại → đại từ → resolver (tên chính xác/vector) → từ điển văn bản → thực thể đóng. Trạng thái `resolved/ambiguous/not_found/context_required`. |
+| `backend/app/workflow/planner.py` | `plan_retrieval()`: capability matrix đóng (facet × operation × subject) → `Task(tool, intent, expected_types, constraints, procedure_codes)`. Không hỗ trợ thì ghi `unsupported`, không đoán. |
+| `backend/app/workflow/executor.py` | `execute_plan()`: chạy task song song, timeout từng tool, coverage từng request, fallback tối đa một lần, single-flight embedding, lỗi hạ tầng → `failed` (không phải `empty`). |
+| `backend/app/workflow/answer.py` | Answer contract: khối "CÁC Ý CẦN TRẢ LỜI", context nhóm theo ý, chọn evidence công bằng theo request, `verify_contract()`, `build_fallback_answer()`. |
+| `backend/app/workflow/graph.py` | Thêm node `THUC_THI`; plan có task **hoặc** unsupported đều đi qua executor; bỏ `BO_SUNG_MUC` khi executor đã phủ. |
+| `backend/app/workflow/run.py` | `RunResult.to_dict()` xuất `question_frame`, `groundings`, `plan`, `coverage`, `verification`, `grounding_ms`. |
+
+Các file cũ vẫn tồn tại và **vẫn dùng** cho đường legacy khi parser tắt/lỗi: `nodes.py`, `router_rules.py`, `resolve.py`, `hybrid.py`, `graph_query.py`, `sections.py`, `fact_lookup.py`.
+
+#### 0.5.3. Trạng thái dữ liệu và hạ tầng (đo ngày 2026-10-22)
+
+```text
+PostgreSQL  chatbot_tthc: procedures (49), procedure_sections, procedure_agencies
+Neo4j       đồ thị tri thức của 49 thủ tục
+Qdrant      chỉ còn collection semantic_search: 541 point, 1024 chiều
+Elasticsearch  chỉ mục từ khoá của procedure_sections
+Model       router/parser qwen3.7-flash · synthesizer deepseek-flash
+            embedding qwen3.7-text-embedding · reranker qwen3-rerank
+```
+
+**Đã gỡ hoàn toàn A0** (identity/profile/case). Không được dựng lại:
+- ba bảng `procedure_identity`, `procedure_profile`, `procedure_case` đã drop;
+- code `identity.py`, `cases.py`, `resolver` dùng identity, `data/case_overrides.csv`, script `build_procedure_*` đã xoá;
+- lý do: đo được **tệ hơn** baseline (subject 24/51 so với 32/51; false clarify 27 so với 12).
+
+#### 0.5.4. Số đo hiện tại
+
+**Bộ 60 câu — baseline 2026-10-21 (trước kiến trúc mới):**
+
+```text
+32/51 đúng thủ tục (63%) · 21/31 đúng con số · 43/60 đúng kết cục
+12 hỏi lại oan · 2 từ chối oan · 1 câu trả lời rác
+```
+
+**Nhóm A (10 câu người dùng, thủ tục 1.115362) — đo lại 2026-10-22 sau Giai đoạn 3 + 4:**
+
+```text
+8/10 đúng (A1–A4, A6, A8–A10); A5 và A7 chỉ đúng một phần
+A1  đúng: 1.115362, 17,5 ngày          (gỡ rối bằng điều kiện thời hạn)
+A2  đúng: 1.115362, 14 ngày            (sửa lỗi chọn 1.115351 "Xóa đăng ký thuê")
+A3  đúng: 1.115362, 15 ngày            (benchmark chấp nhận 15 hoặc 25)
+A4  đúng: 1.115362, 18 ngày
+A5  trả lời được 3 hình thức nộp; dữ liệu không có "Bộ phận Một cửa" nên chưa khớp kỳ vọng
+A6  đúng: Trực tiếp / Trực tuyến / Bưu chính
+A7  trả lời một phần: nói rõ chưa ghi nhận điều kiện (benchmark muốn từ chối)
+A8  đúng: Mẫu số 18
+A9  đúng: văn bản thỏa thuận cấp chung + Mẫu 18
+A10 đúng: danh sách giấy chứng nhận
+```
+
+Nguyên nhân cũ và cách đã sửa:
+
+1. Resolver chỉ trả 3 lựa chọn và lấy vector top-1 → **đã sửa**: top-10 ứng viên + gỡ rối bằng điều kiện thời hạn.
+2. Câu chung khớp nhiều biến thể → **đã sửa**: nhóm thủ tục + đồng thuận/đại diện.
+3. Parser gán sai loại mention → **đã sửa**: fallback `document → procedure`.
+4. Câu điều kiện pháp lý (A7) → còn một phần: trả lời "chưa ghi nhận" thay vì từ chối dứt khoát.
+
+#### 0.5.5. Việc tiếp theo, theo thứ tự ưu tiên
+
+```text
+P1  Resolver: rerank đối chiếu bằng IDF (dữ liệu sinh ra từ kho tên thủ tục,
+    KHÔNG dùng danh sách từ khoá cứng) → sửa A1, A2.
+P1  Grounding: fallback loại mention document ↔ procedure → sửa A8.
+P1  Luật theo operation: check + requirements + subject chưa xác định → abstain
+    (không clarify) → sửa A7.
+P2  Đồng thuận giữa các biến thể: nếu top-2/3 cùng giá trị cho facet được hỏi
+    thì trả lời một lần kèm ghi chú; khác nhau thì clarify → A5, A6, A9, A10.
+P2  (chỉ khi P2 trên thất bại) nhóm canonical suy ra từ dữ liệu, không viết tay.
+P3  Đo lại toàn bộ 60 câu; cập nhật bảng kết quả trong docs/benchmark_60_cau.md.
+P3  Giai đoạn 6.3 (rollout mặc định): người dùng đã chọn áp dụng mặc định,
+    nên bỏ điều kiện chuyển đổi; vẫn phải đo trước khi tuyên bố cải thiện.
+P3  Alias section_type trong SQL (dữ liệu hiện sạch, chưa có ca thật).
+P3  Hybrid fail-open khi reranker lỗi: chỉ thêm metric, chưa đổi chính sách.
+```
+
+#### 0.5.6. Ràng buộc không được vi phạm
+
+```text
+1. KHÔNG dựng lại A0 (identity/profile/case) dưới bất kỳ tên khác.
+2. KHÔNG hardcode danh sách cụm từ/từ khoá để định tuyến hay phân loại.
+   Mọi ngưỡng/từ phân biệt phải suy ra từ dữ liệu (IDF, df, score) hoặc từ schema.
+3. Tên hàm/biến mới dùng tiếng Anh; không dùng tiếng Việt có dấu trong định danh.
+4. Mỗi câu trả lời phải kèm `detail_url`; không đánh số nguồn `[n]` trong câu chữ.
+5. Không trả lời khi bằng chứng rỗng. "Không có dữ liệu" khác "nguồn đang lỗi"
+   khác "chưa hỗ trợ" — ba trạng thái phải hiện khác nhau.
+6. Hậu kiểm phải CHẶN câu vi phạm hợp đồng, không chỉ ghi log. Đường stream
+   không thể rút chữ đã gửi — đây là giới hạn đã biết, không được che.
+7. Sau mọi thay đổi: `uv run ruff check backend scripts` và `uv run pytest -q`.
+```
+
+#### 0.5.7. Lệnh chạy và kiểm
+
+```powershell
+uv run uvicorn backend.app.main:app --reload   # backend + /docs
+uv run pytest -q                               # 702 test (2026-10-22)
+uv run ruff check backend scripts
+cd frontend; npm run dev                       # giao diện người dân + quản trị
+```
+
+API liên quan:
+
+```text
+POST /chat                    → một lần, dùng cho đo/so sánh
+POST /chat/stream             → SSE, giao diện người dân
+POST /api/admin/workflow/ask  → chạy cả luồng, trả trace đầy đủ
+POST /api/admin/retrieval/test→ chạy một engine (playground, cố ý tách khỏi luồng)
+```
+
+#### 0.5.8. Bảng trạng thái 16 giai đoạn
+
+| GĐ | Nội dung | Trạng thái |
 |---|---|---|
-| Có số tiền cụ thể | ~10% | Trả lời được con số |
-| Miễn phí | *chưa đo đúng* | Xem đính chính bên dưới |
-| Viện dẫn văn bản có số hiệu | ~60% | Chỉ nói được "theo Thông tư X" kèm link |
-| Viện dẫn chung chung | — | "Theo quy định hiện hành" |
-| Không có dữ liệu | ~30% | Phải từ chối trả lời |
+| 1 | Khởi tạo dự án, môi trường, config | ✅ xong |
+| 2 | Taxonomy 15 nhóm / 49 lĩnh vực, hợp đồng dữ liệu | ✅ xong |
+| 3 | Crawl API cổng DVC | ✅ xong |
+| 4 | Chuẩn hoá & kiểm định dữ liệu | ✅ xong |
+| 5 | Chunking theo section | ✅ xong |
+| 6 | PostgreSQL (SSOT) | ✅ xong |
+| 7 | Neo4j Knowledge Graph | ✅ xong |
+| 8 | Elasticsearch BM25 | ✅ xong |
+| 9 | Qdrant vector | ✅ xong |
+| 10 | Cache TTL (thay semantic FAQ cache) | 🚧 có TTL, không có FAQ cache |
+| 11 | Hybrid + RRF + reranker | ✅ xong |
+| 12 | Graph Query Engine | ✅ xong |
+| 13 | Hiểu câu hỏi + planner + executor | 🚧 xong kiến trúc, chất lượng chưa đạt |
+| 14 | Answer contract + kiểm chứng | 🚧 xong phần lớn |
+| 15 | Đóng gói API + Docker Compose | 🚧 API có; compose mới có ES/Qdrant |
+| 16 | Đánh giá RAG chuyên sâu + bảo vệ | ⏳ chưa làm |
 
-> **Đính chính quan trọng (kiểm chứng trực tiếp trên cổng).** Khảo sát ban đầu kết luận *"`value = 0` không bao giờ là miễn phí"* — **kết luận đó sai**. Kiểm chứng hai thủ tục:
-> * `1.013314`: API trả `fees: [{value: 0, description: ""}]` → cổng ghi **"miễn phí"**.
-> * `3.000242`: API trả `fees: []` → cổng ghi **"không có thông tin"**.
->
-> Trường phân biệt là **số phần tử của `fees`**, không phải giá trị `value`. Vì vậy quy tắc đúng gồm hai vế:
-> * `fees: []` ở mọi cách thức → `CHUA_XAC_DINH`
-> * `fees` có mục, `value = 0`, mô tả rỗng → `MIEN_PHI`
-> * `fees` có mục, `value = 0`, mô tả **có chữ** → phải đọc mô tả mới phân loại được
->
-> **Việc cần làm ở Giai đoạn 16:** đo lại phân bố 5 loại phí trên **toàn bộ 1.955 bản ghi** (không phải mẫu 10), vì bảng trên được lập trước khi tìm ra quy tắc đúng và **cột "Miễn phí" không đáng tin**.
+#### 0.5.9. Hợp đồng hai lớp: `discovery` và `verified_evidence`
 
-**Hệ quả thiết kế:** hệ thống phân loại 5 trường hợp và trả lời khác nhau; không suy diễn `fees: []` thành "miễn phí". Đây là **giới hạn của nguồn dữ liệu**, không phải lỗi hệ thống, và là một phát hiện có giá trị học thuật khi bảo vệ.
+Từ 2026-10-22, kết quả truy xuất được chia làm hai lớp **không thể lẫn**:
 
-### 0.2b. Bộ trường JSON bám sát file mẫu
-File JSON chuẩn hóa dùng **29 trường**: 23 trường bám sát file mẫu `1.115368.json` (bỏ `raw_text` vì hướng API không tạo được DOM text), cộng **6 trường bổ sung** — 4 trường Mức 1 cho toàn vẹn dữ liệu (`co_quan_ban_hanh`, `ngay_cap_nhat`, `content_hash`, `ngay_crawl`) và 2 trường Mức 2 cho truy vấn CSDL (`phi`, `thoi_han` có cấu trúc). Đây là **hợp đồng dữ liệu cố định**: có test chặn thay đổi âm thầm; muốn nâng cấp phải sửa đồng thời `transform.py`, file test, mục 4.1b và `docs/crawler.md`. Chi tiết ở mục 4.1b.
+```text
+discovery          ứng viên + điểm + lý do tìm thấy — là GIẢ THUYẾT, không dùng để trả lời
+verified_evidence  chỉ sinh sau khi ứng viên đã neo vào mã thủ tục/thực thể thật,
+                   rồi truy xuất bằng section theo mã, Graph theo neo, hoặc fact theo mã
+```
 
-Hệ quả: phí và thời hạn **không** có trường riêng mà nằm dạng text trong bảng `cach_thuc_thuc_hien`. Việc phân loại 5 loại phí chuyển sang **Giai đoạn 5 (chunking)**, không phải Giai đoạn 3.
+- Code: `backend/app/rag/contracts.py`; mỗi mục bằng chứng có `result_kind`, `verified`,
+  `verification` (lý do).
+- Ứng viên từ grounding/resolver nằm ở trace `discovery`, **không** nằm trong `evidence`;
+  `answer.build_context` có hàng rào bỏ qua mục `kind="candidate"`.
+- Đoạn văn hybrid **chưa neo** vào mã đã xác thực được đánh dấu `verified=False`
+  (`chunk_search_without_anchor`); chỉ khi task có mã đã xác thực mới được nâng lên
+  `hybrid_with_verified_code`.
+- Nguyên tắc lấy từ *Deterministic Legal Agents* (SAT-Graph API): tìm kiếm chỉ là **hạt
+  giống** để đi định vị, không phải chân lý cuối cùng.
 
-### 0.3. Giữ nguyên phần taxonomy
-Bảng phân loại **15 Domain Groups và 49 Canonical Fields** ở mục 2 và Phụ lục A **giữ nguyên**, vì độc lập với nguồn dữ liệu (đều dựa trên cột `Lĩnh vực` của danh mục 1.955 TTHC).
+#### 0.5.10. Trường `scenario` — tình huống của từng ý hỏi
 
-### 0.4. Sửa lỗi hiển thị công thức
-Các công thức ở V4 bị mất ký tự `\` khi chuyển file (`$$	ext{...}` thay vì `$$\text{...}`). V4.1 đã sửa.
+Mỗi `requests[*]` có thêm `scenario`: **nguyên văn cụm mô tả tình huống** người dùng nêu
+(ví dụ "cho thuê lại trong dự án", "bán tài sản gắn liền với đất thuê trả tiền hàng năm").
+Rỗng nếu câu không nêu tình huống.
+
+- Chỉ **ghi lại**, không gán mã thủ tục, không sinh `case_key`, không đưa vào `constraints`.
+- Tối đa 500 ký tự, cắt ở ranh giới từ; trường tuỳ chọn nên mô hình quên không làm hỏng frame.
+- Giai đoạn 4 sẽ dùng trường này để xếp hạng ứng viên, lọc bằng chứng và buộc hỏi lại khi
+  cùng thủ tục có nhiều thời hạn theo tình huống. Hiện tại **chưa dùng để quyết định**.
+
+#### 0.5.11. Nhãn nguồn lực `plan_class` (Giai đoạn 2)
+
+Sau khi hiểu câu hỏi và định vị chủ thể, mã nguồn tự gán **một trong 6 nhãn** (không gọi mô
+hình), để biết lượt này cần loại nguồn lực nào:
+
+| Nhãn | Nghĩa |
+|---|---|
+| `direct` | 1 ý, đã xác định thủ tục/thực thể → tra tối thiểu |
+| `composed` | ≥ 2 ý, tất cả xử lý được → chạy song song |
+| `discovery` | chưa có chủ thể, phải tìm thủ tục trước → mới dùng hybrid |
+| `clarify` | chủ thể mơ hồ / cần tiền ngữ → hỏi lại kèm lựa chọn |
+| `unsupported` | operation/facet chưa có công cụ, hoặc câu điều kiện pháp lý mà dữ liệu TTHC không trả lời được |
+| `out_of_scope` | ngoài TTHC / smalltalk → không truy xuất |
+
+- Thứ tự ưu tiên khi gán nhãn lượt: `out_of_scope > unsupported > clarify > composed > discovery > direct`.
+- Mỗi lượt cũng ghi **nhãn riêng cho từng ý** (`request_plan_class`) để không mất chi tiết.
+- Trace: `plan_class`, `plan_class_reason`, `request_plan_class`.
+- Đây **không** phải nhãn nhánh cũ của router LLM; nhãn này chỉ mô tả nguồn lực, không thay
+  quyết định truy xuất. Hiện chưa dùng để đổi hành vi.
+
+#### 0.5.12. Nhóm thủ tục `procedure_themes` (Giai đoạn 3)
+
+Câu chung như "đăng ký biến động đất đai" khớp nhiều thủ tục là biến thể của nhau. Bảng
+`procedure_themes` (sinh từ tên, 4 từ đầu) + `procedures.theme_id` gom chúng lại:
+
+```text
+dang_ky_bien_dong   6 thủ tục   đại diện 1.115362
+dang_ky_cap_giay    6
+cap_giay_phep_xay   2
+dang_ky_dat_dai     2
+dieu_chinh_quyet_dinh 2
+giao_dat_cho_thue   2
+```
+
+Khi resolver trả về nhiều ứng viên:
+
+1. mọi thành viên **cùng nội dung** cho khía cạnh được hỏi → trả lời một lần;
+2. khác nội dung + nhóm có `canonical_code` → trả lời theo đại diện, ghi rõ theo nhóm;
+3. nhóm chiếm đa số (≥ một nửa ứng viên) → dùng nhóm đó;
+4. còn lại → hỏi lại như cũ.
+
+Code: `backend/app/rag/themes.py`, `backend/app/rag/theme_agreement.py`; script
+`scripts/build_procedure_themes.py --dry-run/--apply`. Kết quả CSV:
+`data/processed/procedure_themes.csv`.
+
+#### 0.5.13. Gỡ rối bằng điều kiện thời hạn (Giai đoạn 4)
+
+Resolver trả **top-10 ứng viên** (`ProcedureResolution.candidates`). Với câu hỏi **thời hạn**,
+hệ thống so **tình huống** (`scenario`, hoặc mention nếu scenario rỗng) với
+`procedure_time_cases.dieu_kien` — bảng sinh từ `thoi_han.muc_chi_tiet` của JSON (78 mốc / 49
+thủ tục).
+
+```text
+điểm = vector + 0,25 × độ_phủ_IDF(tình huống, điều kiện)
+ghi đè nếu: chênh ≥ 0,03 · độ phủ mới ≥ 0,5 · độ phủ cũ thấp hơn ≥ 0,2
+```
+
+Kết quả thật: A1 → 1.115362 (17,5 ngày); A2 → 1.115362 (14 ngày, sửa lỗi chọn 1.115351);
+A3 → 15 ngày; A4 → 18 ngày. Fallback `document → procedure` sửa A8. Code:
+`backend/app/rag/disambiguation.py`, `time_cases.py`, `grounding.py`; script
+`scripts/build_time_cases.py`.
+
+#### 0.5.14. Trace log `logs/workflow_trace.jsonl` (v2)
+
+Mỗi lượt ghi **một dòng JSON** (kể cả lượt stream, ghi sau khi stream xong), gồm:
+`question_frame`, `groundings` (kèm `candidates`), `discovery`, `plan_class`,
+`request_plan_class`, `plan`, `coverage`, `evidence` (kèm `verified`), `verification`, `answer`,
+`thieu`, `timings`, `tokens`, `source` (`chat`/`chat_stream`/`admin`/`api`), `phase`
+(`final`/`error`/`cache`); lỗi có thêm `error_detail` (traceback, tối đa 4.000 ký tự).
+
+Ghi log không bao giờ làm hỏng lượt trả lời; lỗi ghi file bị nuốt. Muốn đổi đường dẫn:
+biến môi trường `WORKFLOW_TRACE_JSONL_PATH`.
+
+> **Quy ước đọc tài liệu:** các mục Giai đoạn 1–12 và 15–16 vẫn đúng như mô tả. Riêng **Giai đoạn 13 và 14** đã được hiện thực khác cấu trúc file ghi trong kế hoạch gốc — luôn đối chiếu §0.5 trước.
 
 ---
 
 ## MỤC LỤC TỔNG QUAN
-0. **Những Thay đổi Chính trong V4.1** (chiến lược dữ liệu, chính sách độ tin cậy)
+0. **Bối cảnh, Mục tiêu, Phạm vi & Trạng thái hiện tại**
+   * **0.5. TRẠNG THÁI HIỆN TẠI (2026-10-22)** — kiến trúc, file, số đo, việc tiếp theo, ràng buộc, bảng trạng thái 16 giai đoạn
 1. **Tuyên ngôn Kiến trúc, Phạm vi Dữ liệu & Nguyên tắc Ràng buộc**
 2. **Chuẩn hóa Phân loại Nghiệp vụ (15 Domain Groups & 49 Canonical Fields)**
 3. **Cấu trúc Không gian Lưu trữ & Thư mục Đồng bộ (Google Drive & Repository Skeleton)**
 4. **Quy chuẩn Hợp đồng Dữ liệu (Data Contract, PostgreSQL DDL & Neo4j Graph Schema)**
-5. **Kiến trúc Hệ thống Hai Tầng & Mô hình Hai Tầng Chân lý (Two-Tier Truth Model)**
+5. **Kiến trúc Hệ thống Hiện tại** (luồng hiểu câu hỏi → executor → answer contract; mô hình hai tầng chân lý)
 6. **Lộ trình Triển khai Chi tiết 16 Giai đoạn (Phase 1 – Phase 16)**
 7. **Khung Biện luận & Trả lời Phản biện trước Hội đồng Chấm thi**
    * **Phụ lục A:** Ánh xạ 168 lĩnh vực nguồn về 15 nhóm lĩnh vực
@@ -81,6 +349,8 @@ Các công thức ở V4 bị mất ký tự `\` khi chuyển file (`$$	ext{...}
   * `POST /api/v1/configuring/formality/get-formality-by-citizen` — lấy toàn bộ nội dung chi tiết theo UUID.
 * **Nguyên tắc xác định phạm vi:** Danh mục **1.955 mã TTHC** trong file `danh_sach_tthc_bo_tinh_xa_edit.xlsx` là **nguồn quyết định cần crawl những gì**. API chỉ là công cụ lấy nội dung. Khi một mã trả về nhiều bản, chọn bản `ACTIVE` có `updatedAt` mới nhất.
 * **Quy mô tập dữ liệu thực tế:** Gồm **1.955 TTHC**, bao phủ **168 lĩnh vực nguồn**, trong đó **47 TTHC do UBND tỉnh Gia Lai ban hành** (bổ sung ở giai đoạn sau, thuộc hai nhóm Tài nguyên–Môi trường và Xây dựng–Giao thông). Danh mục gốc có 19 cơ quan ban hành cấp Trung ương (Bộ Nông nghiệp và Môi trường: 357, Bộ Công Thương: 247, Bộ Khoa học và Công nghệ: 247, Bộ Tư pháp: 198, Bộ Xây dựng: 193, Bộ Văn hóa, Thể thao và Du lịch: 165...). Về cấp thực hiện, dữ liệu ghi nhận 13 giá trị phân cấp và nhiều thủ tục thực hiện đồng thời ở nhiều cấp: **1.462 TTHC đúng cấp tỉnh**, **257 TTHC đúng cấp xã**, **370 TTHC có thực hiện ở cấp xã** (kể cả thủ tục đa cấp). Dữ liệu **không có cấp huyện** — phù hợp với mô hình hành chính hiện hành chỉ còn cấp tỉnh và cấp xã.
+
+> **Trạng thái 2026-10-22:** danh mục mục tiêu là 1.955 TTHC, nhưng bộ **đang nạp và đo** là **49 TTHC** (xem §0.5.3). Mọi số liệu trong tài liệu phải ghi rõ quy mô đo; không trộn số của 1.955 với số của 49.
 * **Chuẩn hóa nghiệp vụ:** 168 lĩnh vực nguồn được quy hoạch gọn gàng về **49 Lĩnh vực chuẩn hóa (Canonical Fields)** thuộc **15 Nhóm Lĩnh vực lớn (Domain Groups)**.
 
 ### 1.2. Tuyên ngôn Về Độ chính xác & Triệt tiêu Ảo giác (Hallucination Policy)
@@ -142,7 +412,7 @@ Nhờ vậy **không mâu thuẫn với những gì người dân thấy trên c
 * **PostgreSQL là Nguồn chân lý duy nhất (Single Source of Truth - SSOT):** Mọi thực thể có cấu trúc, quan hệ phân cấp, metadata và các phân đoạn văn bản khai thác từ API cổng DVC đều được lưu trữ tập trung tại PostgreSQL.
 * **Các CSDL còn lại là các phép chiếu chỉ mục (Projections / Auxiliary Search Indexes):**
   * **Elasticsearch:** Chỉ mục tra cứu từ khóa chính xác BM25 (Số quyết định, Mã TTHC, tên viết tắt, cụm từ chuyên ngành).
-  * **Qdrant:** Chỉ mục vector phục vụ tìm kiếm ngữ nghĩa theo ngôn ngữ tự nhiên và Semantic FAQ Cache.
+  * **Qdrant:** Chỉ mục vector phục vụ tìm kiếm ngữ nghĩa (`semantic_search`).
   * **Neo4j:** Đồ thị tri thức biểu diễn liên kết đa chiều giữa Thủ tục - Cơ quan thụ lý - Cơ quan thẩm quyền - Cơ quan phối hợp - Cấp thực hiện.
 
 ### 1.4. Ràng buộc Hạ tầng Vận hành
@@ -276,43 +546,55 @@ tthc-ai-chatbot/
 │   ├── app/
 │   │   ├── main.py                                         <-- FastAPI app, CORS, lifespan, /health
 │   │   ├── config.py                                       <-- Pydantic BaseSettings đọc .env
+│   │   ├── text_norm.py                                    <-- Chuẩn hoá tiếng Việt dùng chung
 │   │   ├── api/
-│   │   │   ├── chat.py                                     <-- POST /chat
+│   │   │   ├── chat.py                                     <-- POST /chat, POST /chat/stream (SSE)
 │   │   │   ├── search.py                                   <-- GET /search (debug retrieval)
 │   │   │   ├── procedures.py                               <-- GET /procedures/{code}
-│   │   │   └── admin.py                                    <-- GIAI ĐOẠN 15: metrics cho Admin UI
+│   │   │   └── admin.py                                    <-- Admin UI + /workflow/ask + /retrieval/test
+│   │   ├── auth/                                           <-- Đăng nhập quản trị, session
 │   │   ├── services/
-│   │   │   ├── chat_service.py                             <-- Điều phối LangGraph
-│   │   │   ├── search_service.py                           <-- Hybrid search + rerank
-│   │   │   └── procedure_service.py                        <-- Fact lookup PostgreSQL
+│   │   │   ├── chat_service.py
+│   │   │   ├── search_service.py
+│   │   │   └── procedure_service.py
 │   │   ├── db/
 │   │   │   ├── postgres.py
 │   │   │   ├── elasticsearch.py
 │   │   │   ├── qdrant.py
 │   │   │   └── neo4j.py
 │   │   ├── rag/
-│   │   │   ├── retrieval.py                                <-- BM25, vector, RRF
+│   │   │   ├── retrieval.py                                <-- Vào luồng workflow
+│   │   │   ├── resolve.py                                  <-- Định danh mã/tên thủ tục, vector
+│   │   │   ├── resolver.py                                 <-- Resolver tên (exact/vector)
+│   │   │   ├── grounding.py                                <-- Grounding subject mention
+│   │   │   ├── hybrid.py                                   <-- BM25 + vector + RRF + rerank
 │   │   │   ├── reranker.py
-│   │   │   ├── generation.py
-│   │   │   └── prompts.py
-│   │   ├── workflow/                                       <-- LangGraph
-│   │   │   ├── state.py                                    <-- GIAI ĐOẠN 13: AgentState
-│   │   │   ├── router.py                                   <-- LLM Router: 15 nhóm & 3 nhánh
-│   │   │   ├── verification.py                             <-- Kiểm chứng số liệu & trích dẫn
-│   │   │   └── graph.py                                    <-- Biên dịch StateGraph
+│   │   │   ├── sections.py                                 <-- Đọc mục nội dung PostgreSQL
+│   │   │   ├── fact_lookup.py                              <-- Thuộc tính định danh
+│   │   │   ├── graph_query.py                              <-- Cypher Template cố định
+│   │   │   ├── graph_shapes.py
+│   │   │   ├── evidence.py                                 <-- Chuẩn hoá bằng chứng
+│   │   │   ├── embeddings.py
+│   │   │   ├── scope.py
+│   │   │   ├── types.py
+│   │   │   ├── generation.py                               <-- PLACEHOLDER: chưa dùng
+│   │   │   └── prompts.py                                  <-- PLACEHOLDER: chưa dùng
+│   │   ├── workflow/                                       <-- LangGraph + hiểu câu hỏi
+│   │   │   ├── state.py
+│   │   │   ├── question_frame.py                           <-- Schema QuestionFrame v1.0
+│   │   │   ├── question_parser.py                          <-- LLM → frame + adapter router
+│   │   │   ├── planner.py                                  <-- Capability matrix → Task
+│   │   │   ├── executor.py                                 <-- Chạy task + coverage + fallback
+│   │   │   ├── answer.py                                   <-- Contract + verify + fallback text
+│   │   │   ├── nodes.py                                    <-- Node truy xuất legacy
+│   │   │   ├── router_rules.py
+│   │   │   ├── graph.py                                    <-- StateGraph, node THUC_THI
+│   │   │   ├── run.py                                      <-- RunResult + trace
+│   │   │   └── trace_log.py
 │   │   ├── models/
-│   │   │   ├── database.py
-│   │   │   └── procedure.py
 │   │   └── schemas/
-│   │       ├── chat.py
-│   │       └── procedure.py
-│   ├── tests/
-│   │   ├── test_health.py
-│   │   ├── test_config.py
-│   │   ├── test_transform.py                               <-- Test logic crawler
-│   │   ├── test_retrieval.py                               <-- Test RRF
-│   │   └── test_router.py                                  <-- Test rẽ nhánh router
-│   ├── migrations/                                         <-- Alembic
+│   ├── tests/                                              <-- pytest (679 test ngày 2026-10-22)
+│   ├── migrations/
 │   └── Dockerfile
 │
 ├── frontend/                                               <-- React + Vite + TypeScript + Tailwind
@@ -725,51 +1007,59 @@ Trong khi `co_quan_co_tham_quyen`, `co_quan_phoi_hop`, `co_quan_duoc_uy_quyen` *
 
 ---
 
-## 5. KIẾN TRÚC HỆ THỐNG HAI TẦNG & MÔ HÌNH HAI TẦNG CHÂN LÝ
+## 5. KIẾN TRÚC HỆ THỐNG HIỆN TẠI
 
 ```text
-                             [Người dùng nhập Câu hỏi]
-                                         │
-                                         ▼
-                 ┌───────────────────────────────────────────────┐
-                 │    TẦNG 1: SEMANTIC FAQ CACHE (FAST-PATH)     │
-                 │    - Qdrant Collection: faq_cache             │
-                 │    - Tính khoảng cách Cosine Similarity       │
-                 └───────────────────────────────────────────────┘
-                                         │
-                     ┌───────────────────┴───────────────────┐
-            >= 0.90 (Cache Hit)                     < 0.90 (Cache Miss)
-                     │                                       │
-                     ▼                                       ▼
-            [Trả ngay kết quả chuẩn]         ┌───────────────────────────────┐
-            Độ trễ < 100ms                   │ TẦNG 2: LANGGRAPH WORKFLOW    │
-            Tiêu tốn 0 token LLM             │ ROUTER (qwen-flash điều phối) │
-                                             └───────────────────────────────┘
-                                                             │
-                  ┌──────────────────────────────────────────┼──────────────────────────────────────────┐
-                  │                                          │                                          │
-                  ▼                                          ▼                                          ▼
-         [Nhánh 1: FACT_LOOKUP]                    [Nhánh 2: HYBRID_SEARCH]                   [Nhánh 3: GRAPH_QUERY]
-         - Động cơ: PostgreSQL                     - Động cơ: Elastic + Qdrant               - Động cơ: Neo4j Cypher
-         - Mục tiêu: Tra cứu trực diện             - Mục tiêu: Hướng dẫn nghiệp vụ           - Mục tiêu: Tra cứu liên ngành
-         - Chân lý: Metadata Tuyệt đối             - Chân lý: Trích xuất có căn cứ           - Căn cứ: Đa cơ quan thụ lý,
-           (Mã, Tên, Cấp, Quyết định, Cơ quan)       (Hồ sơ, Trình tự, Phí, Thời hạn)          phân cấp & cơ quan phối hợp
-                  │                                          │                                          │
-                  └──────────────────────────────────────────┼──────────────────────────────────────────┘
-                                                             │
-                                                             ▼
-                                             ┌───────────────────────────────┐
-                                             │ RESPONSE SYNTHESIZER          │
-                                             │ (deepseek-flash / qwen-flash) │
-                                             │ - Kiểm soát Căn cứ trích dẫn  │
-                                             │ - Guardrails kiểm duyệt mã    │
-                                             └───────────────────────────────┘
-                                                             │
-                                                             ▼
-                                               [Phản hồi Cuối cùng cho Dân]
+[Người dùng]
+     │
+     ▼
+[Chuẩn hoá câu hỏi]
+     │
+     ├─① mã thủ tục (regex) → PostgreSQL xác thực
+     ├─② văn bản pháp lý → từ điển RAM
+     ├─③ thực thể đóng (cơ quan/lĩnh vực/cấp/nhóm)
+     └─④ nếu chưa đủ → semantic parser → QuestionFrame
+                │
+                ▼
+        [Grounding từng subject mention]
+        mã đã xác thực · mã sai · đại từ · resolver tên · từ điển văn bản · thực thể
+                │
+                ▼
+        [Planner tất định — capability matrix]
+        facet × operation × subject → Task(tool, intent, expected_types, constraints)
+        ngoài ma trận → unsupported (không đoán)
+                │
+                ▼
+        [Executor — song song, timeout từng tool]
+        section_lookup · graph · hybrid · fact_lookup
+        coverage từng ý: covered / empty / failed / unsupported / ambiguous
+        fallback tối đa 1 lần/ý; lỗi hạ tầng ≠ thiếu dữ liệu
+                │
+                ▼
+        [Answer contract]
+        khối "CÁC Ý CẦN TRẢ LỜI" · context nhóm theo ý · kiểm chứng hậu sinh
+        vi phạm → retry 1 lần → vẫn vi phạm → câu trả lời tất định từ evidence
+                │
+                ▼
+        [Synthesizer] → câu trả lời + citations + detail_url
 ```
 
----
+### 5.1. Những phương pháp đã bỏ — không dùng lại
+
+| Cách cũ (đã bỏ) | Vấn đề | Cách hiện tại |
+|---|---|---|
+| Router LLM chọn 1 trong 3 nhánh `FACT_LOOKUP / HYBRID_SEARCH / GRAPH_QUERY` | Câu nhiều ý bị ép vào một nhánh; router đoán sai thì mất ý | `QuestionFrame` tách từng ý, planner chọn tool cho **từng** ý |
+| Nhánh tự quyết định có trả lời được không | Không có chỗ nào tính độ phủ; mục thiếu bị bỏ im lặng | Executor tính `coverage` từng request, trả lời một phần và nêu rõ phần thiếu |
+| Semantic FAQ cache trên Qdrant | Không triển khai; Qdrant chỉ còn `semantic_search` | Cache TTL trong tiến trình (Phase 10) |
+| `verification.py` riêng | Chưa từng tồn tại trong mã | `answer.verify_contract()` + `node_sinh` |
+| Để LLM viết Cypher | Không kiểm soát được | `graph_query.py` chỉ dùng Cypher Template cố định |
+
+### 5.2. Mô hình hai tầng chân lý vẫn giữ
+
+1. **Chân lý tuyệt đối** — thuộc tính định danh lấy trực tiếp PostgreSQL (mã, tên, cấp, cơ quan,
+   số quyết định), không qua LLM.
+2. **Chân lý trích xuất** — nội dung hướng dẫn lấy từ RAG/Graph, mọi khẳng định phải có evidence
+   và `detail_url`; mục tiêu Faithfulness ≥ 0.98 (đo ở Giai đoạn 16).
 
 ## 6. LỘ TRÌNH TRIỂN KHAI CHI TIẾT 16 GIAI ĐOẠN (PHASE 1 – PHASE 16)
 
@@ -1025,89 +1315,120 @@ Trong khi `co_quan_co_tham_quyen`, `co_quan_phoi_hop`, `co_quan_duoc_uy_quyen` *
 
 ---
 
-### GIAI ĐOẠN 10: XÂY DỰNG TẦNG FAST-PATH SEMANTIC FAQ CACHE (PHASE 10)
-* **Mục tiêu:** Cắt giảm độ trễ và chi phí tính toán cho các câu hỏi phổ biến thông qua tầng đệm ngữ nghĩa thông minh ở Tầng 1.
-* **Các công việc thực hiện:**
-  1. Tạo Collection riêng biệt `faq_cache` trên Qdrant.
-  2. Soạn thảo tập dữ liệu mẫu gồm 100+ cặp câu hỏi - câu trả lời chuẩn xác đã được thẩm định pháp lý cho các thủ tục phổ biến nhất (Đất đai, Cư trú, GPLX, Hộ tịch).
-  3. Nhúng vector các câu hỏi mẫu và nạp vào Collection `faq_cache`.
-  4. Viết node `backend/app/workflow/faq_cache.py`:
-     * Khi nhận câu hỏi từ người dùng, tính vector và so khớp độ tương đồng Cosine với kho câu hỏi mẫu.
-     * Nếu điểm tương đồng **≥ 0.90** → Trả về ngay câu trả lời đã lưu trữ (Cache Hit), đánh dấu cờ kết thúc luồng.
-     * Nếu điểm tương đồng **< 0.90** → Đưa câu hỏi tiếp tục xuống Tầng 2 (Cache Miss).
-* **Cảnh báo chống rò rỉ dữ liệu:** tập FAQ phải chia **2 phần độc lập** — 60–70% nạp vào `faq_cache`, 30–40% giữ làm bộ test giấu mặt cho Giai đoạn 16. Nếu dùng chính tập đã nạp cache để đánh giá, kết quả sẽ bị thổi phồng và vô nghĩa về mặt học thuật.
-* **Tiêu chuẩn nghiệm thu:** Các câu hỏi trong tập mẫu phản hồi với độ trễ dưới 100ms, không tiêu tốn token gọi mô hình suy luận lớn.
+### GIAI ĐOẠN 10: CACHE TTL TRONG TIẾN TRÌNH (PHASE 10)
 
----
+> **TRẠNG THÁI 2026-10-22:** đã làm **cache TTL**, không làm semantic FAQ cache. Collection
+> `faq_cache` trên Qdrant **không tồn tại**; Qdrant chỉ còn `semantic_search`.
 
-### GIAI ĐOẠN 11: PHÁT TRIỂN ĐỘNG CƠ TÌM KIẾM LAI KẾT HỢP RERANKER (PHASE 11)
-* **Mục tiêu:** Triển khai cơ chế Hybrid Search kết hợp thế mạnh của BM25 (chính xác từ khóa) và Dense Vector (hiểu ngữ nghĩa) bằng thuật toán Reciprocal Rank Fusion (RRF).
-* **Các công việc thực hiện:**
-  1. Viết module `backend/app/rag/retrieval.py`.
-  2. Thực hiện truy vấn song song đồng thời vào Elasticsearch và Qdrant, hợp nhất theo **`chunk_id`**.
-  3. Áp dụng công thức dung hợp thứ hạng RRF với hằng số `k = 60`:
+* **Mục tiêu:** câu hỏi lặp lại trả về ngay, không tốn token và không chạy lại workflow.
+* **Cách làm hiện tại** (`backend/app/api/chat.py`):
+  1. Chuẩn hoá câu hỏi (lowercase, gộp khoảng trắng) làm khoá.
+  2. `_lay_cache()` trả câu trả lời đã lưu nếu còn hạn; `_cat_cache()` ghi sau khi trả lời.
+  3. TTL cấu hình bằng `CACHE_TTL_S`; cache nằm trong tiến trình, mất khi restart.
+  4. Đường stream phát lại câu cache theo từng mẩu `delta`, kèm cờ `cached: true` để client và bộ
+     đo phân biệt với câu mới.
+* **Không dùng:** không nhúng câu hỏi để so cosine, không có ngưỡng 0.90, không có tập FAQ nạp
+  sẵn.
+* **Tiêu chuẩn nghiệm thu:** câu lặp lại phản hồi dưới 100 ms và không gọi mô hình.
+
+### GIAI ĐOẠN 11: TÌM KIẾM LAI + RERANKER (PHASE 11)
+
+> **TRẠNG THÁI 2026-10-22:** đã hoàn thành.
+
+* **Mục tiêu:** kết hợp BM25 (khớp từ khoá) và vector (ngữ nghĩa) bằng RRF, rồi xếp hạng lại.
+* **File:** `backend/app/rag/hybrid.py`, `backend/app/rag/reranker.py`, `backend/app/rag/embeddings.py`.
+* **Cách làm:**
+  1. Chạy song song Elasticsearch (BM25) và Qdrant (cosine), lọc theo mã thủ tục nếu đã xác thực.
+  2. Hợp nhất theo `chunk_id` bằng RRF:
 
 $$\text{RRF\_Score}(d) = \frac{1}{60 + \text{Rank}_{BM25}(d)} + \frac{1}{60 + \text{Rank}_{Vector}(d)}$$
-  4. Lấy ra Top 10 tài liệu có điểm RRF cao nhất.
-  5. Đưa danh sách Top 10 qua mô hình Reranker (như `bge-reranker-large` hoặc tương đương) để chấm điểm lại mức độ liên quan theo ngữ cảnh câu hỏi, chọn ra Top 3 – Top 5 đoạn văn bản tinh hoa nhất.
-* **Tiêu chuẩn nghiệm thu:** Tỷ lệ truy xuất trúng tài liệu (Hit Rate@3) đạt trên 95% trên bộ câu hỏi đánh giá kiểm thử.
 
----
+  3. Rerank bằng `qwen3-rerank`; giữ `rerank_used` / `rerank_error` để UI và bộ đo biết câu trả
+     lời có thực sự qua rerank hay không.
+  4. Cổng từ chối dùng điểm rerank cao nhất trong vài tài liệu đầu; reranker lỗi thì **fail-open**
+     (đã ghi nhận là trade-off, xem §0.5.5).
+* **Tiêu chuẩn nghiệm thu:** Hit Rate@3 ≥ 95% trên bộ đánh giá; mọi câu trả lời có cờ rerank rõ
+  ràng.
 
-### GIAI ĐOẠN 12: ĐỘNG CƠ TRUY VẤN ĐỒ THỊ CHUYÊN BIỆT (GRAPH QUERY ENGINE) (PHASE 12)
-* **Mục tiêu:** Giải quyết các câu hỏi phức tạp về thẩm quyền, liên thông cơ quan, cơ quan phối hợp và cây cấu trúc thủ tục mà các phương pháp tìm kiếm văn bản thông thường không làm được.
-* **Các công việc thực hiện:**
-  1. Viết module `backend/app/workflow/graph.py` cho nhánh truy vấn đồ thị.
-  2. Xây dựng tập mẫu các mẫu câu hỏi định tuyến sang đồ thị:
-     * Tra cứu theo cấp thực hiện: *"Những thủ tục đất đai nào do cấp xã trực tiếp thụ lý?"*
-     * Tra cứu theo cơ quan phối hợp: *"Thủ tục nào do Sở Tài nguyên Môi trường thực hiện nhưng có sự phối hợp của Công an tỉnh?"*
-     * Tra cứu theo nhóm đối tượng: *"Liệt kê các thủ tục ngành công thương áp dụng cho người nước ngoài?"*
-  3. Sử dụng mô hình Router để trích xuất các thực thể (`Entity Extraction`) và sinh câu truy vấn Cypher chuẩn xác qua các Cypher Template an toàn.
-  4. Thực thi câu lệnh trên Neo4j và cấu trúc hóa kết quả trả về dạng danh mục thực thể.
-* **Tiêu chuẩn nghiệm thu:** Các câu hỏi liên quan đến cây thẩm quyền và cơ quan phối hợp trả về đầy đủ danh sách mã thủ tục trong thời gian dưới 50ms.
+### GIAI ĐOẠN 12: ĐỘNG CƠ TRUY VẤN ĐỒ THỊ (PHASE 12)
 
----
+> **TRẠNG THÁI 2026-10-22:** đã hoàn thành.
 
-### GIAI ĐOẠN 13: XÂY DỰNG WORKFLOW ROUTER BẰNG LANGGRAPH (PHASE 13)
-* **Mục tiêu:** Xây dựng bộ điều phối trạng thái luồng làm việc xác định (Deterministic Workflow) bằng LangGraph, thay thế cho mô hình ReAct Agent tự do thiếu kiểm soát.
-* **Các công việc thực hiện:**
-  1. Định nghĩa cấu trúc `AgentState` trong `backend/app/workflow/state.py` chứa: `question`, `domain_group`, `intent_type`, `fact_result`, `search_results`, `graph_result`, `final_answer`, `citations`, `verification_status`, `retry_count`, `error`.
-  2. Xây dựng node điều hướng `backend/app/workflow/router.py` sử dụng mô hình ngôn ngữ tốc độ cao với kỹ thuật Structured Output (ép kiểu JSON):
-     * Phân loại câu hỏi vào đúng 1 trong 15 `domain_group`.
-     * Định tuyến luồng xử lý vào 1 trong 3 nhánh:
-       * `FACT_LOOKUP`: Nếu câu hỏi chứa mã TTHC cụ thể hoặc hỏi về các thuộc tính định danh (Cơ quan ban hành, Cấp thực hiện, Số quyết định).
-       * `GRAPH_QUERY`: Nếu câu hỏi hỏi về danh sách thủ tục theo thẩm quyền, cấp hành chính, cơ quan phối hợp, cơ quan được ủy quyền.
-       * `HYBRID_SEARCH`: Nếu câu hỏi hỏi về hướng dẫn quy trình, hồ sơ giấy tờ, lệ phí, thời hạn giải quyết.
-  3. Biên dịch biểu đồ luồng `StateGraph` với các cạnh rẽ nhánh có điều kiện (Conditional Edges).
-* **Tiêu chuẩn nghiệm thu:** Độ chính xác phân loại định tuyến (Routing Accuracy) đạt trên 98% trên tập dữ liệu đánh giá 100 câu hỏi đa dạng.
+* **Mục tiêu:** trả lời câu hỏi về quan hệ mà tìm kiếm văn bản không làm được: cơ quan ban
+  hành/thực hiện/phối hợp/ủy quyền, cấp, lĩnh vực, nhóm, đối tượng, văn bản căn cứ.
+* **File:** `backend/app/rag/graph_query.py`, `backend/app/rag/graph_shapes.py`.
+* **Cách làm:**
+  1. **Cypher Template cố định** theo `Shape`; LLM **không** viết Cypher.
+  2. `AGENCY` trả 4 vai trò (`BAN_HANH_BOI`, `CO_THAM_QUYEN`, `PHOI_HOP`, `DUOC_UY_QUYEN`) kèm cột
+     `vai_tro`; `CLASSIFY` trả `CAP_THUC_HIEN`, `LINH_VUC`, `DOMAIN_GROUP`, `TRANG_THAI`;
+     `AUDIENCE`, `LEGAL_BASIS_OF_PROCEDURE` trả quan hệ trực tiếp.
+  3. Intent ngược `PROCEDURES_BY_AGENCY/LEVEL/FIELD/GROUP` cho câu liệt kê/đếm theo thực thể.
+  4. Khi planner yêu cầu, Graph chỉ chạy đúng `intent` trong allowlist và lọc dòng theo
+     `expected_types` (ví dụ `implementing_agency` chỉ giữ `CO_THAM_QUYEN`) — không rơi về
+     `classify(question)` theo từ khoá.
+  5. Lỗi Neo4j trả `failed=True`, executor ghi `failed` chứ không phải `empty`.
+* **Tiêu chuẩn nghiệm thu:** câu quan hệ trả đúng loại, dưới 50 ms, 0 token.
 
----
+### GIAI ĐOẠN 13: HIỂU CÂU HỎI & ĐIỀU PHỐI TẤT ĐỊNH (PHASE 13)
+
+> **TRẠNG THÁI 2026-10-22:** đã hiện thực, **chưa đạt** chất lượng mong muốn. Kiến trúc chi tiết
+> ở §0.5; số đo nhóm A ở §0.5.4.
+
+* **Mục tiêu:** thay router "đoán một nhánh" bằng chuỗi **hiểu → định vị → lập kế hoạch → thực
+  thi**; mỗi bước là mã nguồn hoặc LLM có schema, không có nhánh nào tự quyết định thay planner.
+* **Đã làm:**
+  1. `question_frame.py` + `question_parser.py`: LLM trả `QuestionFrame` v1.0 (scope, subject
+     mentions, requests, constraints, ambiguity), validate JSON, cache, timeout.
+  2. `grounding.py`: xác định từng subject mention (`resolved/ambiguous/not_found/context_required`).
+  3. `planner.py`: capability matrix đóng; task có `tool`, `intent`, `expected_types`,
+     `constraints`; ngoài ma trận → `unsupported`.
+  4. `executor.py`: chạy song song, timeout, coverage từng request, fallback tối đa một lần,
+     single-flight embedding.
+  5. `graph.py`: node `THUC_THI`; mọi plan do parser sinh (kể cả rỗng/unsupported) đi qua executor.
+  6. `run.py`: trace `question_frame/groundings/plan/coverage/verification`.
+* **Chưa làm / đang sai:**
+  * Resolver chưa kiểm tra từ phân biệt của tên thủ tục → câu A2 chọn sai thủ tục.
+  * Mention chung khớp nhiều biến thể → clarify oan (A1, A5, A6, A8, A9, A10).
+  * Parser gán sai loại mention (A8) và coi cụm hành vi là tên thủ tục (A7).
+  * Chưa có cơ chế trả lời cho nhóm biến thể cùng câu trả lời.
+* **Tiêu chuẩn nghiệm thu (cập nhật):** đo trên bộ 60 câu, không dùng "routing accuracy 98%" cũ.
+  Mục tiêu trước mắt: **giảm false clarify**, không tăng câu trả lời sai; mọi câu trả lời phải
+  truy được về evidence.
 
 ### GIAI ĐOẠN 14: TỔNG HỢP CÂU TRẢ LỜI, TRÍCH DẪN & HÀNG RÀO AN TOÀN (PHASE 14)
-* **Mục tiêu:** Tổng hợp câu trả lời tự nhiên, rõ ràng, dễ hiểu cho người dân nhưng bắt buộc phải có trích dẫn căn cứ pháp lý và tuân thủ nguyên tắc không bịa đặt.
-* **Các công việc thực hiện:**
-  1. Viết module `backend/app/rag/generation.py` và `backend/app/rag/prompts.py`.
-  2. Thiết kế System Prompt chuẩn mực pháp lý:
-     * Ràng buộc câu trả lời chỉ được sử dụng dữ liệu được cung cấp trong Context.
-     * Bắt buộc trích dẫn rõ: `Mã thủ tục`, `Tên thủ tục`, `Cơ quan thực hiện`, `Số quyết định công bố` và `detail_url` nguồn.
-     * **Không cho LLM tự tạo URL** — mọi liên kết lấy từ trường `detail_url` và `van_ban_vien_dan[].dia_chi` trong metadata.
-     * Với phí: tuân thủ chính sách 5 loại ở mục 1.2b. Nếu nhãn là `THEO_VAN_BAN` thì trả lời *"theo [số hiệu văn bản]"* kèm link, **tuyệt đối không đoán số tiền**. Nếu `CHUA_XAC_DINH` thì nói rõ chưa có thông tin.
-     * **Với `THEO_QUY_DINH_CHUNG` mà MỌI mục phí đều không có số tiền** (thủ tục `2.000115` và tương tự): nêu **cả hai nguồn thông tin** thay vì chọn một. Mẫu:
-       > *"Cổng DVC ghi thủ tục này miễn phí; đồng thời hồ sơ có ghi 'theo quy định của Bộ Tài chính'. Bạn xem chi tiết tại [detail_url]."*
-       * **Lý do:** cổng hiển thị nhãn *"Miễn phí"* bằng logic giao diện của chính nó khi mọi `value = 0`, nhưng chữ *"miễn phí"* **không có trong API** — API chỉ trả `value = 0` kèm mô tả *"Theo quy định của Bộ tài chính"*. Nói chỉ *"theo quy định chung"* thì **lệch với những gì người dân thấy trên cổng**; nói chỉ *"miễn phí"* thì **bịa thêm dữ liệu**. Nêu cả hai là cách duy nhất vừa trung thực vừa không mâu thuẫn.
-       * **KHÔNG được** tự thêm chữ *"miễn phí"* khi `phi.loai` không phải `MIEN_PHI`. Chỉ được **thuật lại** rằng cổng hiển thị như vậy, kèm `detail_url` để người dân tự đối chiếu.
-     * Với thời hạn: nếu thủ tục có nhiều mốc với đơn vị khác nhau thì **liệt kê đầy đủ các mốc**, không gộp thành một con số. Nhãn này do Giai đoạn 5 gán.
-     * **LUẬT "CHƯA GHI NHẬN" ≠ "KHÔNG CÓ" — quan trọng, ảnh hưởng trực tiếp độ trung thực.**
-       * Khi context ghi *"cổng chưa ghi nhận thông tin"* (sinh từ sentinel ở Giai đoạn 5), LLM **KHÔNG được** trả lời *"thủ tục này không có X"*, *"không quy định"*, *"không có thủ tục liên quan"*. Đó là **khẳng định vượt quá dữ liệu**.
-       * Phải trả lời theo mẫu: *"Hiện cổng DVC Quốc gia chưa ghi nhận thông tin về [X] của thủ tục này. Bạn xem trực tiếp tại [detail_url] để chắc chắn."*
-       * Lý do: cổng ghi `"Không có thông tin"` nghĩa là **mục đó chưa được đăng**, không khẳng định pháp luật không có quy định. Trả lời sai dạng này là lỗi nghiệp vụ nặng, đặc biệt với `yeu_cau_dieu_kien` (187 bản ghi) — người dân có thể hiểu sai rằng thủ tục không có điều kiện gì.
-       * Đặc biệt với `thu_tuc_lien_quan`: nếu người dùng hỏi *"thủ tục A có liên quan tới thủ tục nào không?"* và dữ liệu là sentinel, câu trả lời đúng là *"cổng chưa ghi nhận thông tin về thủ tục liên quan"* — **không** phải *"không có thủ tục liên quan"*.
-  3. Xây dựng bộ kiểm chứng sau sinh tại `backend/app/workflow/verification.py`: quét kiểm tra mã thủ tục, cơ quan, số tiền và thời hạn xuất hiện trong câu trả lời có thực sự khớp với evidence hay không; nếu không khớp thì chặn và chuyển sang nhánh từ chối (Abstain).
-* **Tiêu chuẩn nghiệm thu:** 100% câu trả lời đều có trích dẫn mã thủ tục hợp lệ; đạt chỉ số Faithfulness ≥ 0.98 trên tập đánh giá.
 
----
+> **TRẠNG THÁI 2026-10-22:** đã làm phần lớn, **khác cấu trúc file** ghi trong kế hoạch cũ.
+> `rag/generation.py` và `rag/prompts.py` chỉ là placeholder, **không được dùng**. Toàn bộ logic
+> nằm ở `backend/app/workflow/answer.py` và `node_sinh` trong `graph.py`.
+
+* **Mục tiêu:** câu trả lời tiếng Việt, đúng thứ tự ý, chỉ dùng bằng chứng, có nguồn, không bịa.
+* **Đã làm:**
+  1. **Answer contract** (`answer.py`):
+     * khối `CÁC Ý CẦN TRẢ LỜI` theo đúng thứ tự, kèm trạng thái từng ý;
+     * context nhóm theo ý (`### Ý n — <khía cạnh>`), chọn evidence công bằng theo request;
+     * luật: ý `covered` không được nói "chưa ghi nhận"; ý `failed` nói nguồn lỗi, không nói thiếu
+       dữ liệu; ý `unsupported` nói chưa hỗ trợ; ý `ambiguous` phải hỏi lại.
+  2. **Kiểm chứng hậu sinh** (`verify_contract()`): bắt `empty_answer`,
+     `denies_available_evidence`, `omits_missing_data` bằng luật tất định (không gọi mô hình).
+  3. **Retry một lần** với chỉ dẫn sửa; nếu vẫn vi phạm → **chặn** câu của mô hình và dựng câu
+     trả lời tất định từ evidence (`build_fallback_answer()`), hoặc trả `answer_error` nếu không
+     có evidence.
+  4. **Trích dẫn:** `build_citations()` dùng cùng bộ chọn với context; mỗi nguồn có `detail_url`;
+     không đánh số `[n]` trong câu chữ.
+* **Chính sách nội dung vẫn giữ:**
+  * Phí: 5 loại ở §1.2b; không suy `fees: []` thành "miễn phí"; `THEO_VAN_BAN` thì nêu số hiệu,
+    không đoán số tiền.
+  * Thời hạn: nhiều mốc thì liệt kê đủ, không gộp.
+  * **"Chưa ghi nhận" ≠ "không có"**: sentinel nghĩa là cổng chưa đăng, không phải pháp luật
+    không quy định. Đặc biệt với `yeu_cau_dieu_kien` và `thu_tuc_lien_quan`.
+* **Giới hạn đã biết:** đường stream không thể rút chữ đã gửi; kiểm chứng chỉ ghi log/cache, không
+  retry. Muốn chặn tuyệt đối phải buffer (đánh đổi streaming).
+* **Tiêu chuẩn nghiệm thu:** 100% câu trả lời có nguồn hợp lệ; không có câu `answered` nào chứa
+  khẳng định vượt quá evidence; Faithfulness ≥ 0.98 (đo ở Giai đoạn 16).
 
 ### GIAI ĐOẠN 15: ĐÓNG GÓI API VÀ ORCHESTRATION DOCKER COMPOSE (PHASE 15)
+
+> **TRẠNG THÁI 2026-10-22:** API đã có (`/chat`, `/chat/stream`, `/api/admin/*`, `/health`). `compose.yaml` hiện chỉ có **Elasticsearch + Qdrant**; PostgreSQL/Neo4j đang dùng ngoài compose. Chưa đủ 6 service như mô tả dưới đây.
 * **Mục tiêu:** Đóng gói toàn bộ hệ sinh thái dịch vụ thành một khối thống nhất, dễ dàng triển khai, demo và bảo trì trên bất kỳ máy chủ nào chỉ với một câu lệnh.
 * **Các công việc thực hiện:**
   1. Xây dựng ứng dụng FastAPI trong `backend/app/api/` với các endpoint chuẩn:
@@ -1135,7 +1456,7 @@ $$\text{RRF\_Score}(d) = \frac{1}{60 + \text{Rank}_{BM25}(d)} + \frac{1}{60 + \t
 ### GIAI ĐOẠN 16: ĐÁNH GIÁ ĐỘ ĐO RAG CHUYÊN SÂU & CHUẨN BỊ BẢO VỆ (PHASE 16)
 * **Mục tiêu:** Thực hiện đánh giá định lượng hệ thống theo tiêu chuẩn học thuật quốc tế (khung đánh giá RAG Triad / Ragas) để đưa số liệu thuyết phục vào báo cáo tốt nghiệp.
 * **Các công việc thực hiện:**
-  1. Xây dựng tập dữ liệu kiểm thử vàng (Golden Evaluation Dataset) gồm 150 câu hỏi gắn nhãn chuẩn mặt đất (Ground Truth) bao phủ toàn bộ 15 nhóm lĩnh vực. **Tập này phải tách hoàn toàn khỏi tập FAQ đã nạp vào `faq_cache`** (xem Giai đoạn 10), và chia theo nhóm câu hỏi: tên chính thức, cách hỏi tự nhiên, hồ sơ, thời hạn, lệ phí, cơ quan, căn cứ pháp lý, câu hỏi quan hệ, câu hỏi không có đáp án.
+  1. Dùng bộ **60 câu hiện có** trong `docs/benchmark_60_cau.md` (đã có đáp án mong đợi và kết quả baseline), mở rộng dần lên 150 câu nếu còn thời gian. Bộ câu hỏi chia theo nhóm: nêu mã, nêu tên chính thức, mô tả trường hợp, nhiều ý, không dấu/viết tắt, ngoài phạm vi, cần tiền ngữ. **Không** dùng chính tập đã nạp cache để đánh giá.
   2. Đo lường các chỉ số cốt lõi:
      * **Faithfulness (Độ trung thực):** Đảm bảo câu trả lời không chứa thông tin nằm ngoài ngữ cảnh (Mục tiêu ≥ 0.98).
      * **Answer Relevance (Độ liên quan của câu trả lời):** Đánh giá mức độ trả lời đúng trọng tâm câu hỏi của dân (Mục tiêu ≥ 0.95).
@@ -1161,31 +1482,62 @@ Khi bảo vệ đồ án, các thầy cô trong Hội đồng thường tập tr
   > - **Neo4j** biểu diễn các mối liên kết đa chiều giữa các cơ quan hành chính liên thông, cho phép tra cứu cây thẩm quyền chỉ bằng 1 câu lệnh Cypher thay vì phải JOIN 4-5 bảng SQL phức tạp.
   > Sự phân tách này giúp mỗi thành phần hoạt động đúng sở trường, giảm tải CPU và tăng tốc độ phản hồi tổng thể dưới 1.5 giây."*
 
-#### Câu hỏi 2: Tại sao lại tách thành 15 Domain Groups mà không giữ 14 nhóm hay gom theo 19 Cơ quan ban hành?
+#### Câu hỏi 2: Tại sao không dùng router LLM chọn một trong ba nhánh như thiết kế ban đầu?
+
 * **Lập luận trả lời:**
-  > *"Thứ nhất, không thể gom theo Cơ quan ban hành vì một cơ quan phụ trách rất nhiều mảng nghiệp vụ khác nhau (như Ban QL Khu kinh tế phụ trách cả Đất đai, Môi trường, Xây dựng), và người dân đi làm thủ tục thì tìm theo 'nội dung cần làm' chứ không thể biết trước cơ quan nào thụ lý.
-  > Thứ hai, nhóm nghiên cứu quyết định tách riêng nhóm **`01. AN_NINH_TRAT_TU_CU_TRU`** (thuộc thẩm quyền ngành dọc của Công an như thường trú, tạm trú, hộ chiếu) ra khỏi nhóm quốc phòng – ngoại vụ vì hai mảng này khác biệt hoàn toàn về cơ quan quản lý và tần suất sử dụng của công dân. Mảng cư trú có tần suất hỏi rất cao, việc tách riêng giúp triệt tiêu nhiễu không gian vector (Embedding noise), nâng độ chính xác định tuyến của Router lên mức tối đa."*
+  > *"Vì router đoán nhánh chỉ đúng khi câu hỏi chỉ có một ý. Với câu nhiều ý — ví dụ 'cần hồ sơ gì,
+  > bao lâu và đơn vị nào xử lý' — router buộc phải chọn một nhánh, hai ý còn lại bị bỏ. Ngoài ra,
+  > router không có chỗ nào tính được **ý nào đã trả lời, ý nào chưa**, nên không thể trả lời một
+  > phần và nói rõ phần thiếu.
+  >
+  > Kiến trúc hiện tại tách câu hỏi thành `QuestionFrame` (từng ý, từng subject), rồi planner chọn
+  > công cụ cho **từng ý** và executor chạy song song, tính coverage. Router vẫn còn, nhưng chỉ là
+  > **adapter** từ frame sang quyết định, không tự đoán nội dung.*
 
 #### Câu hỏi 3: Làm thế nào hệ thống đảm bảo Chatbot không bịa đặt thông tin (Hallucination) khi hướng dẫn thủ tục?
 * **Lập luận trả lời:**
   > *"Hệ thống kiểm soát ảo giác qua Mô hình Hai Tầng Chân lý (Two-Tier Truth Model):
   > 1. Đối với thông tin thuộc tính định danh (Mã, Cấp, Cơ quan, Quyết định), hệ thống triệt tiêu hoàn toàn ảo giác (Zero Hallucination) bằng cách truy vấn trực diện PostgreSQL, bỏ qua LLM sinh từ.
   > 2. Đối với nội dung chi tiết khai thác từ API cổng DVC (hồ sơ, trình tự, lệ phí), mô hình ngôn ngữ bị ràng buộc chặt chẽ trong Context, bắt buộc trích dẫn số quyết định công bố và đường dẫn nguồn `detail_url` trỏ về trang chi tiết thủ tục trên cổng.
-  > 3. Hệ thống có bộ kiểm duyệt sau sinh (Post-Guardrails) để đối soát mã TTHC trong câu trả lời với CSDL trước khi phản hồi cho người dân, đạt chỉ số Faithfulness ≥ 0.98."*
+  > 3. Hệ thống có **kiểm chứng hậu sinh tất định** (`verify_contract`): bắt câu trả lời rỗng, câu phủ nhận bằng chứng đang có, câu bỏ sót ý thiếu. Nếu sai, sinh lại một lần với chỉ dẫn; vẫn sai thì **chặn câu của mô hình** và dựng câu trả lời trực tiếp từ bằng chứng. Đường stream không thể rút chữ đã gửi — giới hạn này được ghi rõ, không che."*
 
-#### Câu hỏi 4: Trường Cơ quan có thẩm quyền bị khuyết 74,2% trong dữ liệu mở, đồ thị Neo4j xử lý thế nào?
-* **Lập luận trả lời:**
-  > *"Đây là đặc thù thực tế của dữ liệu Cổng DVC Quốc gia khi nhiều thủ tục không ghi nhận cơ quan thẩm quyền độc lập (do thẩm quyền mặc định thuộc cơ quan thực hiện hoặc UBND tỉnh): **1.450/1.955 bản ghi (74,2%)** để trống trường này. Hệ thống xử lý bằng nguyên tắc bù khuyết dữ liệu có kiểm soát (Imputation Heuristic): Gán mặc định thẩm quyền theo cấp hành chính cao nhất thụ lý thủ tục, đồng thời gắn cờ `is_inferred: true` trên cạnh `[:CO_THAM_QUYEN]` trong Neo4j để phân biệt với thẩm quyền công bố tường minh. Điều này vừa giúp đồ thị không bị đứt đoạn khi truy vấn, vừa đảm bảo tính trung thực học thuật khi báo cáo trước Hội đồng."*
+#### Câu hỏi 4: Vì sao hiện tại chỉ có 49 thủ tục mà không phải 1.955?
 
-#### Câu hỏi 5: Tầng 1 Semantic FAQ Cache mang lại lợi ích gì cho hệ thống dịch vụ công?
 * **Lập luận trả lời:**
-  > *"Trong thực tế hành chính công, có hơn 40% câu hỏi của người dân lặp lại cùng một nội dung (ví dụ: lệ phí làm sổ đỏ, địa chỉ làm hộ chiếu, hồ sơ cấp đổi bằng lái xe). Tầng 1 Fast-path sử dụng Qdrant đo độ tương đồng ngữ nghĩa: Với những câu hỏi tương đồng **≥ 0.90**, hệ thống trả về ngay câu trả lời mẫu đã được thẩm định pháp lý trong thời gian dưới 100ms mà không tốn một token LLM nào. Điều này vừa giúp tiết kiệm chi phí vận hành máy chủ, vừa đảm bảo tính chuẩn xác và đồng nhất tuyệt đối cho các câu hỏi phổ biến."*
+  > *"49 thủ tục là **bộ đang nạp và đo** để phát triển, kiểm thử và làm luận văn; danh mục mục
+  > tiêu vẫn là 1.955 TTHC theo file danh mục. Việc mở rộng là thay dữ liệu đầu vào, không phải
+  > viết lại kiến trúc: pipeline crawl → chuẩn hoá → chunk → nạp PostgreSQL/Neo4j/Elasticsearch/
+  > Qdrant đã chạy đúng trên 49 thủ tục.
+  >
+  > Điều quan trọng là **không trộn quy mô khi báo cáo**: mọi ngưỡng, số đo, tỷ lệ phải ghi rõ đo
+  > trên 49 hay 1.955. Khi mở rộng, các ngưỡng phải đo lại vì phân bố dữ liệu đổi.*
+
+#### Câu hỏi 5: Vì sao không dùng Semantic FAQ Cache như thiết kế ban đầu?
+
+* **Lập luận trả lời:**
+  > *"Semantic FAQ cache yêu cầu một tập câu hỏi–đáp án đã thẩm định và một collection vector
+  > riêng. Dự án **không triển khai** phần này: Qdrant hiện chỉ có `semantic_search` cho nội dung
+  > thủ tục. Thay vào đó là **cache TTL trong tiến trình** theo khoá câu hỏi đã chuẩn hoá — đơn
+  > giản, không cần dữ liệu thẩm định, và không tạo thêm một nguồn "chân lý" thứ hai.
+  >
+  > Hệ quả học thuật: không có số liệu "40% câu hỏi lặp lại" để trích dẫn; nếu cần, phải đo trên
+  > log thật. Cache TTL chỉ tiết kiệm chi phí cho câu lặp lại, không được coi là cơ chế trả lời.*
 
 #### Câu hỏi 6: Vì sao nhiều câu hỏi về lệ phí hệ thống không trả lời được con số cụ thể? Đây có phải là điểm yếu của hệ thống?
 * **Lập luận trả lời:**
   > *"Đây là **giới hạn của nguồn dữ liệu**, không phải điểm yếu của hệ thống, và nhóm đã đo lường được giới hạn đó. Khảo sát trên dữ liệu Cổng Dịch vụ công Quốc gia cho thấy chỉ khoảng 10% thủ tục công bố mức phí cụ thể; khoảng 60% chỉ **viện dẫn sang văn bản pháp lý khác** (ví dụ 'Thực hiện theo quy định tại Thông tư số 10/2024/TT-BTC'); khoảng 30% hoàn toàn không có dữ liệu phí. Nhóm xử lý bằng **chính sách trả lời theo độ tin cậy dữ liệu**: phí có số tiền thì trả lời số tiền; phí viện dẫn thì trả lời đúng số hiệu văn bản kèm link tra cứu; phí không có dữ liệu thì **từ chối trả lời** và nói rõ chưa có thông tin. Điều nhóm **không làm** là suy diễn '0 đồng' thành 'miễn phí' — vì như vậy mới là bịa đặt và mới là điểm yếu thật sự. Hệ thống chọn trung thực với dữ liệu nguồn thay vì tạo cảm giác luôn biết câu trả lời."*
 
 ---
+
+#### Câu hỏi 7: Dữ liệu thiếu cơ quan có thẩm quyền thì hệ thống xử lý thế nào?
+
+* **Lập luận trả lời:**
+  > *"Trong danh mục mục tiêu 1.955 TTHC, trường `co_quan_co_tham_quyen` trống ở **1.450 bản ghi
+  > (74,2%)** — đây là đặc thù của nguồn, không phải lỗi crawl. Hệ thống bù có kiểm soát: gán thẩm
+  > quyền theo cấp hành chính cao nhất thụ lý và đánh dấu `procedure_agencies.is_inferred = true`,
+  > để truy vấn không bị đứt nhưng vẫn phân biệt được **dữ liệu công bố** với **dữ liệu suy luận**.
+  > Bộ 49 thủ tục đang dùng cũng theo cùng cơ chế; khi mở rộng lên 1.955, tỷ lệ này phải được đo lại
+  > và báo cáo riêng."*
 
 ## PHỤ LỤC A — ÁNH XẠ 168 LĨNH VỰC NGUỒN VỀ 15 NHÓM LĨNH VỰC
 

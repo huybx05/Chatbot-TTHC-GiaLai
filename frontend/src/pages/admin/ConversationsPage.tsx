@@ -1,354 +1,237 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
 import type { BadgeTone } from "./shared.tsx";
 import { Badge, Card, Icon, MetricCard, PageHeader, SectionTitle } from "./shared.tsx";
 
-type AnswerSource = {
-  type: "Q/A" | "Hybrid" | "Graph" | "Fact" | "Smalltalk";
-  label: string;
-  detail: string;
-  tone: BadgeTone;
-};
+type Source = "FAQ" | "Hybrid" | "Fact lookup" | "Graph" | "Trực tiếp";
+type Feedback = "like" | "dislike" | "none";
 
-type Turn = {
+type ConversationLog = {
   id: string;
+  dateGroup: "today" | "yesterday";
+  time: string;
+  session: string;
   question: string;
   answer: string;
-  route: string;
+  context: string;
+  source: Source;
+  supportingSources: Source[];
   latency: string;
   confidence: string;
-  sources: AnswerSource[];
+  feedback: Feedback;
 };
 
-type ConversationSession = {
-  id: string;
-  user: string;
-  title: string;
-  time: string;
-  status: string;
-  statusTone: BadgeTone;
-  turns: Turn[];
-  tokens: string;
-  cost: string;
-  satisfaction: string;
-};
-
-const sessions: ConversationSession[] = [
+const logs: ConversationLog[] = [
   {
-    id: "s1",
-    user: "Người dân ẩn danh",
-    title: "Cấp lại thẻ Căn cước bị mất",
-    time: "Hôm nay, 09:42",
-    status: "Đã trả lời kèm nguồn",
-    statusTone: "ok",
-    tokens: "2.840",
-    cost: "1.420đ",
-    satisfaction: "Hữu ích",
-    turns: [
-      {
-        id: "t1",
-        question: "Tôi mất CCCD thì cấp lại cần giấy tờ gì và làm ở đâu?",
-        answer:
-          "Hệ thống trả lời theo thủ tục cấp lại thẻ Căn cước, nêu nơi tiếp nhận, hồ sơ cần chuẩn bị và thời hạn giải quyết. Câu trả lời được gắn nguồn từ mã thủ tục và đường dẫn chi tiết trên Cổng DVC.",
-        route: "SEARCH",
-        latency: "1.38s",
-        confidence: "0.91",
-        sources: [
-          {
-            type: "Hybrid",
-            label: "Elasticsearch + Qdrant",
-            detail: "Chunk hồ sơ, trình tự, thời hạn của thủ tục căn cước",
-            tone: "info",
-          },
-          {
-            type: "Fact",
-            label: "PostgreSQL",
-            detail: "Mã TTHC, tên thủ tục, cơ quan thực hiện, detail_url",
-            tone: "ok",
-          },
-        ],
-      },
-      {
-        id: "t2",
-        question: "Có cần nộp sổ hộ khẩu giấy không?",
-        answer:
-          "Hệ thống dùng ngữ cảnh hội thoại trước đó để hiểu vẫn đang hỏi về cấp lại Căn cước, sau đó trả lời ngắn và giữ nguồn trích dẫn cũ.",
-        route: "FACT_LOOKUP",
-        latency: "620ms",
-        confidence: "0.88",
-        sources: [
-          {
-            type: "Fact",
-            label: "PostgreSQL",
-            detail: "Metadata thủ tục và trường thành phần hồ sơ đã chuẩn hóa",
-            tone: "ok",
-          },
-        ],
-      },
-    ],
+    id: "log-01",
+    dateGroup: "today",
+    time: "09:42",
+    session: "Cấp lại thẻ Căn cước bị mất",
+    question: "Tôi mất CCCD thì cấp lại cần giấy tờ gì và làm ở đâu?",
+    answer: "Người dân có thể nộp hồ sơ trực tuyến hoặc trực tiếp tại cơ quan quản lý căn cước. Hồ sơ và nơi tiếp nhận được trả lời theo thủ tục tương ứng trên Cổng DVC.",
+    context: "[Hybrid] Thủ tục cấp lại thẻ Căn cước: thành phần hồ sơ, nơi tiếp nhận và thời hạn giải quyết.\n[Fact lookup] Mã thủ tục, cơ quan thực hiện và đường dẫn chi tiết từ PostgreSQL.",
+    source: "Hybrid",
+    supportingSources: ["Fact lookup"],
+    latency: "1.38s",
+    confidence: "0.91",
+    feedback: "like",
   },
   {
-    id: "s2",
-    user: "Cán bộ phường",
-    title: "Đăng ký khai sinh liên thông",
-    time: "Hôm nay, 08:17",
-    status: "Trúng Q/A cache",
-    statusTone: "info",
-    tokens: "860",
-    cost: "380đ",
-    satisfaction: "Chưa đánh giá",
-    turns: [
-      {
-        id: "t1",
-        question: "Đăng ký khai sinh cho trẻ dưới 6 tuổi gồm những bước nào?",
-        answer:
-          "Câu trả lời lấy nhanh từ cặp Q/A đã duyệt, sau đó gắn mã thủ tục liên thông 2.002621 để người dùng đối chiếu.",
-        route: "Q/A_LOOKUP",
-        latency: "94ms",
-        confidence: "0.96",
-        sources: [
-          {
-            type: "Q/A",
-            label: "Q/A cache đã duyệt",
-            detail: "FAQ: khai sinh, thường trú, cấp thẻ BHYT cho trẻ dưới 6 tuổi",
-            tone: "info",
-          },
-          {
-            type: "Fact",
-            label: "PostgreSQL",
-            detail: "Mã TTHC 2.002621 và detail_url nguồn",
-            tone: "ok",
-          },
-        ],
-      },
-    ],
+    id: "log-02",
+    dateGroup: "today",
+    time: "09:44",
+    session: "Cấp lại thẻ Căn cước bị mất",
+    question: "Có cần nộp sổ hộ khẩu giấy không?",
+    answer: "Không yêu cầu xuất trình sổ hộ khẩu giấy. Người dân làm theo hướng dẫn tại nơi tiếp nhận hồ sơ hoặc trên Cổng DVC.",
+    context: "[Fact lookup] Trường thành phần hồ sơ của thủ tục cấp lại thẻ Căn cước; dữ liệu đã chuẩn hóa từ PostgreSQL.",
+    source: "Fact lookup",
+    supportingSources: [],
+    latency: "620ms",
+    confidence: "0.88",
+    feedback: "none",
   },
   {
-    id: "s3",
-    user: "Người dân ẩn danh",
-    title: "Thủ tục nào liên quan đến bảo hiểm thất nghiệp?",
-    time: "Hôm qua, 16:03",
-    status: "Dùng Graph",
-    statusTone: "warn",
-    tokens: "3.120",
-    cost: "1.760đ",
-    satisfaction: "Cần kiểm tra",
-    turns: [
-      {
-        id: "t1",
-        question: "Thủ tục điều chỉnh đóng BHXH có liên quan tới thủ tục bảo hiểm thất nghiệp không?",
-        answer:
-          "Hệ thống ưu tiên Neo4j để kiểm tra quan hệ thủ tục. Vì dữ liệu quan hệ liên thông còn mỏng, câu trả lời nêu rõ quan hệ tìm được và phần chưa đủ dữ liệu.",
-        route: "GRAPH",
-        latency: "1.02s",
-        confidence: "0.74",
-        sources: [
-          {
-            type: "Graph",
-            label: "Neo4j Knowledge Graph",
-            detail: "Quan hệ THU_TUC_LIEN_QUAN, cơ quan thực hiện, lĩnh vực",
-            tone: "warn",
-          },
-          {
-            type: "Hybrid",
-            label: "Hybrid Search kiểm chứng",
-            detail: "Chunk thông tin chung và thủ tục liên thông",
-            tone: "info",
-          },
-        ],
-      },
-    ],
+    id: "log-03",
+    dateGroup: "today",
+    time: "08:17",
+    session: "Đăng ký khai sinh liên thông",
+    question: "Đăng ký khai sinh cho trẻ dưới 6 tuổi gồm những bước nào?",
+    answer: "Câu trả lời được lấy từ FAQ đã duyệt của thủ tục liên thông đăng ký khai sinh, thường trú và cấp thẻ BHYT cho trẻ dưới 6 tuổi.",
+    context: "[FAQ] Cặp hỏi đáp đã duyệt về thủ tục 2.002621.\n[Fact lookup] Mã thủ tục và đường dẫn nguồn chính thức.",
+    source: "FAQ",
+    supportingSources: ["Fact lookup"],
+    latency: "94ms",
+    confidence: "0.96",
+    feedback: "like",
   },
   {
-    id: "s4",
-    user: "Người dân ẩn danh",
-    title: "Chào hỏi và cảm ơn",
-    time: "Hôm qua, 11:25",
-    status: "Không truy xuất",
-    statusTone: "muted",
-    tokens: "120",
-    cost: "45đ",
-    satisfaction: "Hữu ích",
-    turns: [
-      {
-        id: "t1",
-        question: "Xin chào, bạn giúp tôi tra cứu thủ tục được không?",
-        answer:
-          "Hệ thống nhận diện đây là lời chào nên trả lời trực tiếp, không gọi kho dữ liệu để tiết kiệm chi phí và latency.",
-        route: "SMALLTALK",
-        latency: "210ms",
-        confidence: "0.99",
-        sources: [
-          {
-            type: "Smalltalk",
-            label: "LLM trả lời trực tiếp",
-            detail: "Không dùng Q/A, Hybrid Search hay Graph",
-            tone: "muted",
-          },
-        ],
-      },
-    ],
+    id: "log-04",
+    dateGroup: "yesterday",
+    time: "16:03",
+    session: "Thủ tục liên quan đến bảo hiểm thất nghiệp",
+    question: "Thủ tục điều chỉnh đóng BHXH có liên quan tới thủ tục bảo hiểm thất nghiệp không?",
+    answer: "Hệ thống kiểm tra quan hệ thủ tục trên Neo4j và đối chiếu thêm các chunk liên quan. Kết quả chỉ nêu các quan hệ hiện có trong dữ liệu.",
+    context: "[Graph] Các node thủ tục, lĩnh vực và quan hệ liên quan trong Neo4j.\n[Hybrid] Chunk thông tin chung và thủ tục liên thông để kiểm chứng.",
+    source: "Graph",
+    supportingSources: ["Hybrid"],
+    latency: "1.02s",
+    confidence: "0.74",
+    feedback: "dislike",
+  },
+  {
+    id: "log-05",
+    dateGroup: "yesterday",
+    time: "11:25",
+    session: "Chào hỏi và cảm ơn",
+    question: "Xin chào, bạn giúp tôi tra cứu thủ tục được không?",
+    answer: "Tôi có thể hỗ trợ tra cứu hồ sơ, trình tự thực hiện, cơ quan giải quyết, thời hạn và lệ phí của thủ tục hành chính.",
+    context: "Không dùng kho dữ liệu: hệ thống nhận diện câu chào hỏi và trả lời trực tiếp.",
+    source: "Trực tiếp",
+    supportingSources: [],
+    latency: "210ms",
+    confidence: "0.99",
+    feedback: "like",
   },
 ];
 
-function sourceIcon(type: AnswerSource["type"]) {
-  return {
-    "Q/A": "quiz",
-    Hybrid: "travel_explore",
-    Graph: "hub",
-    Fact: "storage",
-    Smalltalk: "chat_bubble",
-  }[type];
+function sourceTone(source: Source): BadgeTone {
+  if (source === "Hybrid") return "ok";
+  if (source === "Graph") return "warn";
+  if (source === "Trực tiếp") return "muted";
+  return "info";
+}
+
+function feedbackLabel(feedback: Feedback) {
+  return { like: "Hữu ích", dislike: "Không hữu ích", none: "Chưa đánh giá" }[feedback];
+}
+
+function feedbackTone(feedback: Feedback): BadgeTone {
+  return feedback === "like" ? "ok" : feedback === "dislike" ? "bad" : "muted";
 }
 
 export default function ConversationsPage() {
-  const [selectedId, setSelectedId] = useState(sessions[0].id);
-  const selected = sessions.find((session) => session.id === selectedId) ?? sessions[0];
-  const totalTurns = sessions.reduce((sum, session) => sum + session.turns.length, 0);
+  const [dateRange, setDateRange] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState("all");
+  const [feedbackFilter, setFeedbackFilter] = useState("all");
+  const [selectedLog, setSelectedLog] = useState<ConversationLog | null>(null);
+
+  const filteredLogs = useMemo(
+    () => logs.filter((log) =>
+      (dateRange !== "today" || log.dateGroup === "today")
+      && (sourceFilter === "all" || log.source === sourceFilter)
+      && (feedbackFilter === "all" || log.feedback === feedbackFilter),
+    ),
+    [dateRange, sourceFilter, feedbackFilter],
+  );
+
+  const todayQuestions = logs.filter((log) => log.dateGroup === "today").length;
+  const positiveFeedback = logs.filter((log) => log.feedback === "like").length;
+  const averageLatency = Math.round(logs.reduce((sum, log) => sum + Number.parseFloat(log.latency) * (log.latency.includes("ms") ? 0.001 : 1), 0) / logs.length * 1000);
 
   return (
     <>
       <PageHeader
-        eyebrow="Hội thoại"
-        title="Lịch sử hỏi đáp người dùng"
-        description="Theo dõi phiên hỏi đáp, nguồn sinh câu trả lời và từng lượt truy xuất để phát hiện câu trả lời thiếu nguồn, route sai hoặc cần bổ sung Q/A."
+        eyebrow="Log hội thoại"
+        title="Theo dõi hỏi đáp của người dân"
+        description="Xem từng lượt hỏi đáp, nguồn truy xuất, thời gian phản hồi và đánh giá của người dùng."
       />
 
-      <div className="mb-4 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard icon="forum" label="Phiên hôm nay" value="428" note="+12% so với hôm qua" tone="info" />
-        <MetricCard icon="question_answer" label="Lượt hỏi đáp" value={String(totalTurns)} note="Trong dữ liệu mẫu đang xem" tone="ok" />
-        <MetricCard icon="bolt" label="Q/A cache hit" value="31%" note="Mục tiêu v1: 25-40%" tone="info" />
-        <MetricCard icon="schedule" label="P95 latency" value="1.42s" note="Hybrid đang là nhánh chậm nhất" tone="warn" />
+      <div className="mb-4 flex items-center gap-2 text-xs text-text-secondary">
+        <Icon name="science" className="text-[16px] text-primary" />
+        Dữ liệu mẫu giao diện, sẽ thay bằng log thực tế khi backend sẵn sàng.
       </div>
 
-      <div className="grid gap-4 xl:grid-cols-[360px_1fr]">
-        <Card className="space-y-4">
-          <SectionTitle
-            title="Tổng quan phiên"
-            note="Chọn một phiên để xem chi tiết từng câu hỏi, câu trả lời và nguồn đã dùng."
-          />
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <MetricCard icon="question_answer" label="Câu hỏi hôm nay" value={String(todayQuestions)} note="Theo log đang hiển thị" tone="info" />
+        <MetricCard icon="forum" label="Câu hỏi 30 ngày" value={String(logs.length)} note="Trong dữ liệu mẫu" tone="ok" />
+        <MetricCard icon="thumb_up" label="Đánh giá hữu ích" value={String(positiveFeedback)} note="Like từ người dùng" tone="ok" />
+        <MetricCard icon="schedule" label="Latency trung bình" value={`${averageLatency}ms`} note="Từ các lượt trả lời" tone="info" />
+      </div>
 
-          <div className="grid grid-cols-2 gap-2 text-sm">
-            {[
-              ["Q/A", "31%"],
-              ["Hybrid", "46%"],
-              ["Graph", "9%"],
-              ["Không truy xuất", "14%"],
-            ].map(([label, value]) => (
-              <div key={label} className="rounded-lg border border-border-color bg-secondary-surface p-3">
-                <p className="text-xs font-semibold uppercase text-text-secondary">{label}</p>
-                <p className="mt-1 text-xl font-bold">{value}</p>
-              </div>
-            ))}
-          </div>
+      <Card className="mt-4">
+        <SectionTitle title="Danh sách log hỏi đáp" note="Chọn một dòng để xem đầy đủ nội dung hội thoại và nguồn truy xuất." />
 
-          <div className="space-y-2">
-            {sessions.map((session) => (
-              <button
-                key={session.id}
-                type="button"
-                onClick={() => setSelectedId(session.id)}
-                className={[
-                  "w-full rounded-lg border p-3 text-left transition",
-                  selected.id === session.id
-                    ? "border-primary bg-primary-soft"
-                    : "border-border-color hover:bg-secondary-surface",
-                ].join(" ")}
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate font-bold">{session.title}</p>
-                    <p className="mt-1 text-xs text-text-secondary">
-                      {session.user} · {session.time}
-                    </p>
-                  </div>
-                  <Badge tone={session.statusTone}>{session.status}</Badge>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-text-secondary">
-                  <span>{session.turns.length} lượt</span>
-                  <span>{session.tokens} token</span>
-                  <span>{session.cost}</span>
-                </div>
-              </button>
-            ))}
-          </div>
-        </Card>
+        <div className="mb-4 grid gap-3 md:grid-cols-3">
+          <label className="text-sm font-semibold">Thời gian
+            <select className="mt-1.5 w-full rounded-lg border border-border-color bg-card-surface px-3 py-2 text-sm font-normal" value={dateRange} onChange={(event) => setDateRange(event.target.value)}>
+              <option value="all">Tất cả thời gian</option>
+              <option value="today">Hôm nay</option>
+              <option value="7d">7 ngày gần nhất</option>
+              <option value="30d">30 ngày gần nhất</option>
+            </select>
+          </label>
+          <label className="text-sm font-semibold">Nguồn trả lời
+            <select className="mt-1.5 w-full rounded-lg border border-border-color bg-card-surface px-3 py-2 text-sm font-normal" value={sourceFilter} onChange={(event) => setSourceFilter(event.target.value)}>
+              <option value="all">Tất cả nguồn</option><option value="FAQ">FAQ</option><option value="Hybrid">Hybrid</option><option value="Fact lookup">Fact lookup</option><option value="Graph">Graph</option><option value="Trực tiếp">Trực tiếp</option>
+            </select>
+          </label>
+          <label className="text-sm font-semibold">Đánh giá
+            <select className="mt-1.5 w-full rounded-lg border border-border-color bg-card-surface px-3 py-2 text-sm font-normal" value={feedbackFilter} onChange={(event) => setFeedbackFilter(event.target.value)}>
+              <option value="all">Tất cả đánh giá</option><option value="like">Hữu ích</option><option value="dislike">Không hữu ích</option><option value="none">Chưa đánh giá</option>
+            </select>
+          </label>
+        </div>
 
-        <div className="space-y-4">
-          <Card>
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <p className="text-xs font-bold uppercase tracking-wide text-primary">Chi tiết phiên</p>
-                <h3 className="mt-1 text-xl font-bold">{selected.title}</h3>
-                <p className="mt-1 text-sm text-text-secondary">
-                  {selected.user} · {selected.time} · Đánh giá: {selected.satisfaction}
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <Badge tone={selected.statusTone}>{selected.status}</Badge>
-                <Badge tone="muted">{`${selected.tokens} token`}</Badge>
-                <Badge tone="muted">{selected.cost}</Badge>
+        <p className="mb-3 text-sm text-text-secondary">{filteredLogs.length} lượt hỏi đáp đang hiển thị</p>
+        <div className="overflow-x-auto rounded-lg border border-border-color">
+          <table className="w-full min-w-[940px] text-left text-sm">
+            <thead className="border-b border-border-color bg-secondary-surface text-xs uppercase text-text-secondary"><tr><th className="px-4 py-3 font-semibold">Thời gian</th><th className="min-w-[300px] px-4 py-3 font-semibold">Câu hỏi</th><th className="px-4 py-3 font-semibold">Nguồn</th><th className="px-4 py-3 font-semibold">Latency</th><th className="px-4 py-3 font-semibold">Tin cậy</th><th className="px-4 py-3 font-semibold">Đánh giá</th></tr></thead>
+            <tbody>
+              {filteredLogs.map((log) => (
+                <tr
+                  key={log.id}
+                  role="button"
+                  tabIndex={0}
+                  onClick={() => setSelectedLog(log)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") setSelectedLog(log);
+                  }}
+                  className="cursor-pointer border-b border-border-color outline-none last:border-0 hover:bg-hover-item focus-visible:bg-primary-soft"
+                >
+                  <td className="whitespace-nowrap px-4 py-3 align-top text-text-secondary">{log.dateGroup === "today" ? "Hôm nay" : "Hôm qua"}<br />{log.time}</td>
+                  <td className="px-4 py-3 align-top"><p className="line-clamp-2 font-semibold">{log.question}</p><p className="mt-1 truncate text-xs text-text-secondary">{log.session}</p></td>
+                  <td className="px-4 py-3 align-top"><Badge tone={sourceTone(log.source)}>{log.source}</Badge></td>
+                  <td className="whitespace-nowrap px-4 py-3 align-top font-semibold">{log.latency}</td>
+                  <td className="px-4 py-3 align-top"><Badge tone={Number(log.confidence) >= 0.85 ? "ok" : "warn"}>{log.confidence}</Badge></td>
+                  <td className="px-4 py-3 align-top"><Badge tone={feedbackTone(log.feedback)}>{feedbackLabel(log.feedback)}</Badge></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+
+      {selectedLog ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4" role="dialog" aria-modal="true" aria-labelledby="conversation-log-title" onMouseDown={() => setSelectedLog(null)}>
+          <section className="max-h-[85vh] w-full max-w-3xl overflow-y-auto rounded-xl border border-border-color bg-card-surface p-5 shadow-xl" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex items-start justify-between gap-4">
+              <div><p className="text-xs font-bold uppercase tracking-wide text-primary">Chi tiết lượt hỏi đáp</p><h3 id="conversation-log-title" className="mt-1 text-lg font-bold">{selectedLog.session}</h3><p className="mt-1 text-sm text-text-secondary">{selectedLog.dateGroup === "today" ? "Hôm nay" : "Hôm qua"}, {selectedLog.time}</p></div>
+              <button type="button" onClick={() => setSelectedLog(null)} aria-label="Đóng chi tiết" className="rounded-lg p-1 text-text-secondary hover:bg-secondary-surface hover:text-text-primary"><Icon name="close" /></button>
+            </div>
+
+            <div className="mt-5 grid gap-4 md:grid-cols-2">
+              <div><p className="text-xs font-bold uppercase tracking-wide text-text-secondary">Câu hỏi</p><p className="mt-2 text-sm leading-6">{selectedLog.question}</p></div>
+              <div><p className="text-xs font-bold uppercase tracking-wide text-text-secondary">Câu trả lời</p><p className="mt-2 text-sm leading-6 text-text-secondary">{selectedLog.answer}</p></div>
+            </div>
+
+            <div className="mt-5 border-t border-border-color pt-4">
+              <p className="text-sm font-bold">Context đưa vào LLM</p>
+              <pre className="mt-3 whitespace-pre-wrap rounded-lg border border-border-color bg-secondary-surface p-3 font-sans text-sm leading-6 text-text-secondary">{selectedLog.context}</pre>
+            </div>
+
+            <div className="mt-5 border-t border-border-color pt-4">
+              <p className="text-sm font-bold">Thông tin xử lý</p>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Badge tone={sourceTone(selectedLog.source)}>{selectedLog.source}</Badge>
+                {selectedLog.supportingSources.map((source) => <Badge key={source} tone={sourceTone(source)}>{source}</Badge>)}
+                <Badge tone="muted">{`Latency ${selectedLog.latency}`}</Badge>
+                <Badge tone={Number(selectedLog.confidence) >= 0.85 ? "ok" : "warn"}>{`Tin cậy ${selectedLog.confidence}`}</Badge>
+                <Badge tone={feedbackTone(selectedLog.feedback)}>{feedbackLabel(selectedLog.feedback)}</Badge>
               </div>
             </div>
-          </Card>
-
-          {selected.turns.map((turn, index) => (
-            <Card key={turn.id} className="space-y-4">
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-wide text-text-secondary">Lượt {index + 1}</p>
-                  <h4 className="mt-1 text-base font-bold">Route: {turn.route}</h4>
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Badge tone="info">{`Latency ${turn.latency}`}</Badge>
-                  <Badge tone={Number(turn.confidence) >= 0.9 ? "ok" : "warn"}>{`Tin cậy ${turn.confidence}`}</Badge>
-                </div>
-              </div>
-
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-                <div className="rounded-lg border border-border-color bg-user-bubble p-4">
-                  <div className="mb-2 flex items-center gap-2 text-sm font-bold">
-                    <Icon name="person" className="text-[18px]" />
-                    Câu hỏi người dùng
-                  </div>
-                  <p className="text-sm leading-6">{turn.question}</p>
-                </div>
-
-                <div className="rounded-lg border border-border-color bg-secondary-surface p-4">
-                  <div className="mb-2 flex items-center gap-2 text-sm font-bold">
-                    <Icon name="smart_toy" className="text-[18px]" />
-                    Câu trả lời hệ thống
-                  </div>
-                  <p className="text-sm leading-6 text-text-secondary">{turn.answer}</p>
-                </div>
-              </div>
-
-              <div>
-                <SectionTitle title="Nguồn đã dùng" note="Theo route trong GUIDE: Q/A, Fact Lookup, Hybrid Search, Graph hoặc Smalltalk." />
-                <div className="grid gap-3 lg:grid-cols-2">
-                  {turn.sources.map((source) => (
-                    <div key={`${turn.id}-${source.type}`} className="rounded-lg border border-border-color p-3">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
-                          <span className="flex size-8 items-center justify-center rounded-lg bg-primary-soft text-primary">
-                            <Icon name={sourceIcon(source.type)} className="text-[18px]" />
-                          </span>
-                          <div>
-                            <p className="text-sm font-bold">{source.label}</p>
-                            <p className="text-xs text-text-secondary">{source.type}</p>
-                          </div>
-                        </div>
-                        <Badge tone={source.tone}>{source.type}</Badge>
-                      </div>
-                      <p className="mt-3 text-sm leading-6 text-text-secondary">{source.detail}</p>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </Card>
-          ))}
+          </section>
         </div>
-      </div>
+      ) : null}
     </>
   );
 }

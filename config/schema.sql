@@ -286,4 +286,21 @@ CREATE TRIGGER trg_users_updated
     BEFORE UPDATE ON users
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+
+-- ── A4. Nhóm thủ tục (Giai đoạn 3) ─────────────────────────────────────────
+-- Nhóm sinh từ 4 từ đầu của tên thủ tục; chỉ để trả lời câu chung khi các
+-- biến thể cùng nội dung hoặc có thủ tục đại diện. KHÔNG phải bảng hồ sơ/định danh.
+CREATE TABLE IF NOT EXISTS procedure_themes (
+    theme_id        VARCHAR(128) PRIMARY KEY,
+    label           TEXT NOT NULL,
+    canonical_code  VARCHAR(50),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE procedures
+    ADD COLUMN IF NOT EXISTS theme_id VARCHAR(128)
+    REFERENCES procedure_themes(theme_id) ON DELETE SET NULL;
+
+CREATE INDEX IF NOT EXISTS idx_procedures_theme ON procedures(theme_id);
+
 COMMIT;

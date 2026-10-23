@@ -40,9 +40,9 @@ data/failed/*
 
 command.txt
 excel_to_json.py
-prompt_ui.md
 Diagram.drawio
 docs/*
+guide.txt
 
 # Danh mục thủ tục và bản trích xuất từ cổng (không commit vì dung lượng lớn)
 danh_sach_tthc_bo_tinh_xa.json
@@ -67,3 +67,5 @@ Thumbs.db
 *.swo
 
 data/*
+logs/*.jsonl
+tltk/*

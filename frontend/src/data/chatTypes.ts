@@ -22,20 +22,12 @@ export type AnswerBlock =
   | { kind: "strongParagraph"; label: string; text: string }
   | { kind: "ordered"; items: ListItem[] }
   | { kind: "unordered"; items: ListItem[] }
-  | { kind: "infoCards"; title: string; icon: string; cards: InfoCard[] }
   | { kind: "citation"; items: CitationItem[] };
-
-export interface InfoCard {
-  /** Nhãn nhỏ phía trên, ví dụ "HỒ SƠ CẦN NỘP". */
-  label: string;
-  /** Dòng đậm, ví dụ "Tối đa 07 ngày làm việc". */
-  value: string;
-  description: string;
-}
 
 export interface CitationItem {
   title: string;
   note: string;
+  url?: string;
 }
 
 export interface UserMessage {
@@ -55,6 +47,15 @@ export interface AssistantMessage {
   authorNote?: string;
   icon: string;
   blocks: AnswerBlock[];
+  /**
+   * Giai đoạn đang chạy, hiện cạnh tên trợ lý.
+   *
+   * * `searching` — đang định tuyến và truy xuất (1–6 giây, chưa có chữ nào);
+   * * `answering` — đã có bằng chứng, mô hình đang chuẩn bị chữ;
+   * * *không có* — chữ đã chạy (hoặc đã xong). Lúc chữ chạy thì chính dòng chữ là dấu hiệu
+   *   tiến độ, thêm vòng xoay chỉ làm rối.
+   */
+  phase?: "searching" | "answering";
 }
 
 export type ChatMessage = UserMessage | AssistantMessage;

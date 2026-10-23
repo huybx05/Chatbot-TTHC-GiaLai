@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { RichText } from "../RichText";
+
 import type {
   AnswerBlock,
   AssistantMessage,
@@ -20,47 +23,26 @@ export function UserBubble({ message }: { message: UserMessage }) {
   );
 }
 
-function InfoCardsBlock({ block }: { block: Extract<AnswerBlock, { kind: "infoCards" }> }) {
-  return (
-    <div className="flex flex-col gap-3 rounded-xl border border-border-color bg-card-surface p-4 shadow-sm">
-      <div className="flex items-center gap-2 text-[15px] font-semibold text-primary">
-        <span className="material-symbols-outlined text-[20px]">{block.icon}</span>
-        <span>{block.title}</span>
-      </div>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        {block.cards.map((card) => (
-          <div
-            key={card.label}
-            className="flex flex-col gap-1 rounded-lg border border-border-color/70 bg-main-bg p-3"
-          >
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-primary">
-              {card.label}
-            </span>
-            <span className="text-[13.5px] font-medium text-text-primary">{card.value}</span>
-            <p className="text-[13px] leading-relaxed text-text-secondary">{card.description}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function CitationBlock({ block }: { block: Extract<AnswerBlock, { kind: "citation" }> }) {
   return (
-    <div className="flex flex-col gap-1.5 border-t border-border-color pt-4 text-sm">
+    <div className="flex flex-col gap-1.5 pt-2 text-sm">
       <span className="font-semibold text-text-primary">Nguồn tham khảo:</span>
       <ul className="flex flex-col gap-1 pl-1 text-text-secondary">
         {block.items.map((item) => (
           <li key={item.title} className="flex flex-col gap-0.5">
             <span className="flex items-center gap-1.5">
-              <span>{`${item.title} —`}</span>
-              <a
-                href="#"
-                className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"
-              >
-                Xem nguồn
-                <span className="material-symbols-outlined text-[14px]">open_in_new</span>
-              </a>
+              <span>{item.title}</span>
+              {item.url ? (
+                <a
+                  href={item.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-0.5 font-medium text-primary hover:underline"
+                >
+                  — Xem nguồn
+                  <span className="material-symbols-outlined text-[14px]">open_in_new</span>
+                </a>
+              ) : null}
             </span>
             {item.note ? <span className="text-[12px]">{item.note}</span> : null}
           </li>
@@ -94,7 +76,9 @@ function Block({ block }: { block: AnswerBlock }) {
       return <h4 className="text-[16px] font-bold text-text-primary">{block.text}</h4>;
 
     case "paragraph":
-      return <p className="leading-[1.75]">{block.text}</p>;
+      // Câu trả lời của mô hình có `**in đậm**` và gạch đầu dòng; hiện nguyên văn thì người dân
+      // thấy cả dấu sao. Dùng **cùng** bộ hiển thị với trang quản trị để hai nơi không lệch.
+      return <RichText text={block.text} className="leading-[1.75]" />;
 
     case "strongParagraph":
       return (
@@ -117,9 +101,6 @@ function Block({ block }: { block: AnswerBlock }) {
         </ul>
       );
 
-    case "infoCards":
-      return <InfoCardsBlock block={block} />;
-
     case "citation":
       return <CitationBlock block={block} />;
   }
@@ -127,6 +108,13 @@ function Block({ block }: { block: AnswerBlock }) {
 
 /** Câu trả lời của trợ lý: avatar, tên, rồi các khối nội dung. */
 export default function MessageAnswer({ message }: { message: AssistantMessage }) {
+  const [feedback, setFeedback] = useState<"like" | "dislike" | null>(null);
+
+  // Chưa có chữ nào thì cũng chưa nên mời đánh giá.
+  const coChu = message.blocks.some((block) =>
+    "text" in block ? block.text.trim().length > 0 : block.kind === "citation",
+  );
+
   return (
     <article className="flex w-full flex-col gap-3">
         <div className="flex items-center gap-2.5">
@@ -138,7 +126,23 @@ export default function MessageAnswer({ message }: { message: AssistantMessage }
           )}
         </div>
         <div className="flex flex-col">
-          <span className="text-[14px] font-medium text-text-primary">{message.author}</span>
+          <span className="flex items-center gap-1.5 text-[14px] font-medium text-text-primary">
+            {message.author}
+            {message.phase ? (
+              // Vòng xoay **và nhãn** nằm cạnh tên trợ lý: người dùng biết hệ thống đang ở bước
+              // nào, thay vì chỉ thấy một vòng xoay không nói gì.
+              <span className="flex items-center gap-1.5" role="status">
+                <span className="material-symbols-outlined animate-spin text-[15px] text-primary">
+                  progress_activity
+                </span>
+                <span className="text-[12px] font-normal text-text-secondary">
+                  {message.phase === "searching"
+                    ? "Đang tìm kiếm thông tin…"
+                    : "Chuẩn bị câu trả lời…"}
+                </span>
+              </span>
+            ) : null}
+          </span>
           {message.authorNote ? (
             <span className="text-[12px] text-text-secondary">{message.authorNote}</span>
           ) : null}
@@ -149,6 +153,31 @@ export default function MessageAnswer({ message }: { message: AssistantMessage }
         {message.blocks.map((block, index) => (
           <Block key={`${message.id}-${block.kind}-${index}`} block={block} />
         ))}
+
+        {message.phase || !coChu ? null : (
+        <div className="flex items-center gap-1 pt-1 text-text-secondary" aria-label="Đánh giá câu trả lời">
+          <button
+            type="button"
+            title="Câu trả lời hữu ích"
+            aria-label="Thích câu trả lời"
+            aria-pressed={feedback === "like"}
+            onClick={() => setFeedback((current) => current === "like" ? null : "like")}
+            className={`flex size-8 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-primary-soft hover:text-primary ${feedback === "like" ? "bg-primary-soft text-primary" : ""}`}
+          >
+            <span className="material-symbols-outlined text-[18px]">thumb_up</span>
+          </button>
+          <button
+            type="button"
+            title="Câu trả lời chưa hữu ích"
+            aria-label="Không thích câu trả lời"
+            aria-pressed={feedback === "dislike"}
+            onClick={() => setFeedback((current) => current === "dislike" ? null : "dislike")}
+            className={`flex size-8 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-primary-soft hover:text-primary ${feedback === "dislike" ? "bg-primary-soft text-primary" : ""}`}
+          >
+            <span className="material-symbols-outlined text-[18px]">thumb_down</span>
+          </button>
+        </div>
+        )}
       </div>
     </article>
   );

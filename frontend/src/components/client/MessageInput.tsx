@@ -5,10 +5,11 @@ interface MessageInputProps {
   prefill: string;
   placeholder: string;
   onSend: (text: string) => void;
+  disabled?: boolean;
 }
 
 /** Ô nhập câu hỏi, tự giãn chiều cao. Enter gửi, Shift+Enter xuống dòng. */
-export default function MessageInput({ prefill, placeholder, onSend }: MessageInputProps) {
+export default function MessageInput({ prefill, placeholder, onSend, disabled = false }: MessageInputProps) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -19,6 +20,10 @@ export default function MessageInput({ prefill, placeholder, onSend }: MessageIn
     }
   }, [prefill]);
 
+  useEffect(() => {
+    if (!disabled) textareaRef.current?.focus();
+  }, [disabled]);
+
   const resize = () => {
     const el = textareaRef.current;
     if (!el) return;
@@ -28,7 +33,7 @@ export default function MessageInput({ prefill, placeholder, onSend }: MessageIn
 
   const submit = () => {
     const text = value.trim();
-    if (!text) return;
+    if (!text || disabled) return;
     onSend(text);
     setValue("");
     const el = textareaRef.current;
@@ -39,8 +44,10 @@ export default function MessageInput({ prefill, placeholder, onSend }: MessageIn
     <div className="flex items-center gap-3 rounded-[14px] border border-border-strong bg-card-surface p-2.5 pl-4 shadow-[0_2px_12px_rgba(46,46,46,0.04)] transition-colors focus-within:border-primary">
       <textarea
         ref={textareaRef}
+        autoFocus
         rows={1}
         value={value}
+        disabled={disabled}
         onChange={(event) => setValue(event.target.value)}
         onInput={resize}
         onKeyDown={(event) => {
@@ -50,13 +57,14 @@ export default function MessageInput({ prefill, placeholder, onSend }: MessageIn
           }
         }}
         placeholder={placeholder}
-        className="max-h-32 min-h-[44px] flex-1 resize-none border-0 bg-transparent py-1.5 text-[16px] leading-[24px] text-text-primary placeholder:text-text-secondary/60 focus:outline-none"
+        className="max-h-32 min-h-[44px] flex-1 resize-none border-0 bg-transparent py-1.5 text-[16px] leading-[24px] text-text-primary placeholder:text-text-secondary/60 focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
       />
       <button
         type="button"
         aria-label="Gửi câu hỏi"
+        disabled={disabled}
         onClick={submit}
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-sm transition-colors hover:bg-primary-hover"
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-sm transition-colors hover:bg-primary-hover disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="material-symbols-outlined text-[20px]">arrow_upward</span>
       </button>

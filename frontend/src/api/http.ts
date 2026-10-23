@@ -15,10 +15,10 @@ type HttpMethod = "GET" | "POST" | "PATCH";
 
 export async function request<T>(
   path: string,
-  init: { method?: HttpMethod; body?: unknown } = {},
+  init: { method?: HttpMethod; body?: unknown; timeoutMs?: number } = {},
 ): Promise<T> {
   const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const timeout = window.setTimeout(() => controller.abort(), init.timeoutMs ?? REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
@@ -29,7 +29,22 @@ export async function request<T>(
     });
 
     if (!response.ok) {
-      throw new ApiError("Không thể xử lý yêu cầu lúc này.", response.status);
+      // Đọc `detail` từ body lỗi của FastAPI để hiện đúng nguyên nhân.
+      //
+      // Trước đây chỗ này ném một câu chung "Không thể xử lý yêu cầu lúc này.",
+      // nên thông báo như "Chế độ 'hybrid' chưa triển khai" bị nuốt mất và trang
+      // kiểm thử chỉ hiện lỗi vô nghĩa. Vẫn giữ câu chung làm dự phòng khi body
+      // không phải JSON hoặc không có `detail`.
+      let message = "Không thể xử lý yêu cầu lúc này.";
+      try {
+        const payload = (await response.json()) as { detail?: unknown };
+        if (typeof payload.detail === "string" && payload.detail.trim()) {
+          message = payload.detail;
+        }
+      } catch {
+        // body không phải JSON — dùng câu chung
+      }
+      throw new ApiError(message, response.status);
     }
 
     return (await response.json()) as T;
