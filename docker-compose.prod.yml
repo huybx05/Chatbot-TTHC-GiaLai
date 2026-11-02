@@ -35,6 +35,19 @@ services:
       timeout: 5s
       retries: 5
     logging: *default-logging
+  
+  s3:
+    image: chrislusf/seaweedfs:latest
+    command:
+      - mini
+      - -dir=/data
+      - -s3
+      - -s3.port=8333
+      - -s3.config=/etc/seaweedfs/s3.json
+    networks: [data]
+    volumes:
+      - seaweedfs-data:/data
+      - /opt/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
 
   redis:
     image: redis:7-alpine
@@ -136,7 +149,10 @@ services:
       ELASTICSEARCH_HOST: http://elasticsearch:9200
       QDRANT_HOST: http://qdrant:6333
       REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      S3_ENDPOINT: ${S3_ENDPOINT_DOCKER:-http://host.docker.internal:8333}
       WEB_CONCURRENCY: "2"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
