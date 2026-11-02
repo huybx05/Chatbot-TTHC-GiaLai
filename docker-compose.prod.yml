@@ -38,6 +38,7 @@ services:
   
   s3:
     image: chrislusf/seaweedfs:latest
+    restart: unless-stopped
     command:
       - mini
       - -dir=/data
@@ -48,6 +49,8 @@ services:
     volumes:
       - seaweedfs-data:/data
       - /opt/seaweedfs/s3.json:/etc/seaweedfs/s3.json:ro
+    mem_limit: 256m
+    logging: *default-logging
 
   redis:
     image: redis:7-alpine
@@ -160,6 +163,8 @@ services:
         condition: service_healthy
       qdrant:
         condition: service_started
+      s3:
+        condition: service_started
       neo4j:
         condition: service_healthy
       elasticsearch:
@@ -229,3 +234,4 @@ volumes:
   neo4j-logs:
   elasticsearch-data:
   app-logs:
+  seaweedfs-data:

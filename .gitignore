@@ -95,3 +95,6 @@ short-term memory du an truoc.md
 # Giữ tài liệu deploy trong repo dù docs/ đang được ignore
 !docs/deployment_vps_cloudflare.md
 
+# SeaweedFS credentials
+seaweedfs/s3.json
+

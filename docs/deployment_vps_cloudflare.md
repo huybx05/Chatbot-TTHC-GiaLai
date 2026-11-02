@@ -250,9 +250,25 @@ DATABASE_PASSWORD=<mật-khẩu-app>
 DATABASE_URL=postgresql+psycopg://chatbot_app:<mật-khẩu-app>@postgres:5432/chatbot_tthc
 
 REDIS_PASSWORD=<mật-khẩu-redis>
-REDIS_URL=
+REDIS_URL=redis://:<mật-khẩu-redis>@redis:6379/0
 
+NEO4J_URL=neo4j://neo4j:7687
+NEO4J_USERNAME=neo4j
 NEO4J_PASSWORD=<mật-khẩu-neo4j>
+NEO4J_DATABASE=neo4j
+NEO4J_RUN_ID=full
+
+ELASTICSEARCH_HOST=http://elasticsearch:9200
+QDRANT_HOST=http://qdrant:6333
+
+S3_ENDPOINT=http://localhost:8333
+S3_ENDPOINT_DOCKER=http://s3:8333
+S3_BUCKET=procedure-documents
+S3_ACCESS_KEY=<access-key-trong-s3.json>
+S3_SECRET_KEY=<secret-key-trong-s3.json>
+S3_REGION=ap-southeast-1
+
+CLOUDFLARE_TUNNEL_TOKEN=<token-tunnel>
 
 QWEN_BASE_URL=<...>
 QWEN_API_KEY=<...>
@@ -278,6 +294,72 @@ docker compose -f docker-compose.prod.yml config
 
 Nếu báo thiếu biến, kiểm tra lại `.env`.
 
+## 3.4 Tạo cấu hình SeaweedFS S3
+
+Compose mount file này vào container:
+
+```text
+/opt/seaweedfs/s3.json
+```
+
+Tạo thư mục:
+
+```bash
+sudo mkdir -p /opt/seaweedfs
+sudo chown deploy:deploy /opt/seaweedfs
+```
+
+Sinh key:
+
+```bash
+openssl rand -hex 16
+openssl rand -hex 32
+```
+
+Tạo file:
+
+```bash
+nano /opt/seaweedfs/s3.json
+```
+
+Nội dung:
+
+```json
+{
+  "identities": [
+    {
+      "name": "tthc",
+      "credentials": [
+        {
+          "accessKey": "<ACCESS_KEY>",
+          "secretKey": "<SECRET_KEY>"
+        }
+      ],
+      "actions": [
+        "Admin",
+        "Read",
+        "Write"
+      ]
+    }
+  ]
+}
+```
+
+Phân quyền:
+
+```bash
+chmod 600 /opt/seaweedfs/s3.json
+```
+
+Hai giá trị `<ACCESS_KEY>` và `<SECRET_KEY>` phải trùng với:
+
+```env
+S3_ACCESS_KEY=<ACCESS_KEY>
+S3_SECRET_KEY=<SECRET_KEY>
+```
+
+Nếu file này không tồn tại, service `s3` sẽ không khởi động được.
+
 ---
 
 # 4. Build image
@@ -296,11 +378,11 @@ docker images | grep tracuutthc
 
 # 5. Khởi động hạ tầng
 
-Khởi động database và search store trước:
+Khởi động database, search store và SeaweedFS trước:
 
 ```bash
 docker compose -f docker-compose.prod.yml up -d \
-  postgres redis qdrant neo4j elasticsearch
+  postgres redis qdrant neo4j elasticsearch s3
 ```
 
 Kiểm tra:
@@ -327,7 +409,7 @@ docker compose -f docker-compose.prod.yml logs -f neo4j
 | Dữ liệu | Đích | Bước |
 |---|---|---|
 | Thủ tục, chunk, FAQ, tài liệu metadata | PostgreSQL | Bước 6 |
-| File PDF/Word đính kèm | S3/MinIO | Bước 6C |
+| File PDF/Word đính kèm | S3/SeaweedFS | Bước 6C |
 | Đồ thị tri thức | Neo4j | Bước 9 |
 | Chỉ mục tìm kiếm BM25 | Elasticsearch | Bước 10 |
 | Vector embedding | Qdrant | Bước 10 |
@@ -464,26 +546,58 @@ audit_logs
 
 Chỉ dùng nếu thật sự muốn giữ lịch sử chat và tài khoản.
 
-## 6C. File đính kèm (PDF/Word)
+## 6C. File đính kèm (PDF/Word) với SeaweedFS
 
 PostgreSQL chỉ lưu metadata trong `procedure_documents`.
 
-File thật nằm ở:
+File thật nằm ở SeaweedFS S3 gateway, service `s3` trong compose.
 
-```text
-S3
-MinIO
-hoặc object storage tương đương
+### Cấu hình
+
+Trong `.env`:
+
+```env
+S3_ENDPOINT=http://localhost:8333
+S3_ENDPOINT_DOCKER=http://s3:8333
+S3_BUCKET=procedure-documents
+S3_ACCESS_KEY=<access-key-trong-/opt/seaweedfs/s3.json>
+S3_SECRET_KEY=<secret-key-trong-/opt/seaweedfs/s3.json>
+S3_REGION=ap-southeast-1
 ```
 
-Nếu có tài liệu đính kèm, phải copy bucket/file sang object storage mới.
+Service `s3` và backend cùng network `data`, nên backend gọi:
 
-Ví dụ với MinIO/S3:
+```text
+http://s3:8333
+```
+
+Không mở port 8333 ra Internet.
+
+### Tạo bucket
+
+Chạy từ container backend:
 
 ```bash
-aws s3 sync ./duong-dan-file-s3 \
-  s3://procedure-documents \
-  --endpoint-url https://s3-endpoint-cua-ban
+docker compose -f docker-compose.prod.yml exec -T backend \
+  python -c "import boto3, os; s=boto3.client('s3', endpoint_url='http://s3:8333', aws_access_key_id=os.environ['S3_ACCESS_KEY'], aws_secret_access_key=os.environ['S3_SECRET_KEY'], region_name='ap-southeast-1'); s.create_bucket(Bucket='procedure-documents')"
+```
+
+Nếu bucket đã tồn tại, lệnh có thể báo `BucketAlreadyOwnedByYou`; bỏ qua.
+
+### Copy file lên SeaweedFS
+
+Cách đơn giản: chạy một container AWS CLI tạm trong cùng network:
+
+```bash
+docker run --rm \
+  --network tracuutthc_data \
+  -e AWS_ACCESS_KEY_ID=<access-key> \
+  -e AWS_SECRET_ACCESS_KEY=<secret-key> \
+  -v "$PWD/duong-dan-file:/data:ro" \
+  amazon/aws-cli \
+  s3 sync /data s3://procedure-documents \
+  --endpoint-url http://s3:8333 \
+  --region ap-southeast-1
 ```
 
 Nếu chưa cần tải tài liệu, có thể bỏ qua bước này lúc deploy ban đầu.
@@ -1042,16 +1156,137 @@ Thứ tự đúng:
 1. Chuẩn bị VPS
 2. Cài Docker
 3. Đưa code + .env
-4. Build
-5. Chạy database/search
-6. Khôi phục dữ liệu
-7. Tạo role DB
-8. Chạy backend/frontend
-9. Test nội bộ bằng Host header
-10. Tạo Cloudflare Tunnel
-11. Trỏ domain/subdomain
-12. Bật Access/WAF/rate limit
-13. Backup + monitoring
+4. Tạo /opt/seaweedfs/s3.json
+5. Build
+6. Chạy database/search/SeaweedFS
+7. Khôi phục dữ liệu
+8. Tạo role DB
+9. Chạy backend/frontend
+10. Test nội bộ bằng Host header
+11. Tạo Cloudflare Tunnel
+12. Trỏ domain/subdomain
+13. Bật Access/WAF/rate limit
+14. Backup + monitoring
 ```
+
+---
+
+# Phụ lục A — Reset VPS để deploy lại từ đầu
+
+> Các lệnh dưới đây **xóa container, volume, image và thư mục dự án**.
+> Chỉ chạy khi chắc chắn muốn làm lại từ đầu.
+
+## A.1 Sao lưu nếu cần
+
+```bash
+sudo mkdir -p /opt/backups
+cd /opt/tra_cuu_tthc 2>/dev/null && \
+docker compose -f docker-compose.prod.yml exec -T postgres \
+  pg_dump -U postgres -d chatbot_tthc -Fc \
+  > /opt/backups/chatbot_tthc_$(date +%F).dump
+```
+
+Nếu không cần dữ liệu cũ, bỏ qua bước này.
+
+## A.2 Dừng và xóa stack
+
+Nếu còn file compose:
+
+```bash
+cd /opt/tra_cuu_tthc 2>/dev/null || true
+
+docker compose --profile tunnel -f docker-compose.prod.yml \
+  down -v --remove-orphans 2>/dev/null || true
+
+docker compose -f compose.yaml \
+  down -v --remove-orphans 2>/dev/null || true
+```
+
+Nếu file compose đã mất, xóa theo label project:
+
+```bash
+for project in tracuutthc chatbot-tthc-gialai; do
+  ids=$(docker ps -aq --filter "label=com.docker.compose.project=$project")
+  if [ -n "$ids" ]; then docker rm -f $ids; fi
+
+  volumes=$(docker volume ls -q --filter "label=com.docker.compose.project=$project")
+  if [ -n "$volumes" ]; then docker volume rm $volumes; fi
+
+  networks=$(docker network ls -q --filter "label=com.docker.compose.project=$project")
+  if [ -n "$networks" ]; then docker network rm $networks 2>/dev/null || true; fi
+done
+```
+
+## A.3 Xóa image và cache
+
+```bash
+docker rmi tracuutthc-backend:latest tracuutthc-frontend:latest 2>/dev/null || true
+docker builder prune -af
+docker image prune -af
+docker network prune -f
+```
+
+Không dùng `docker system prune --volumes` nếu VPS còn service khác.
+
+## A.4 Xóa file dự án
+
+Kiểm tra đường dẫn trước:
+
+```bash
+realpath /opt/tra_cuu_tthc 2>/dev/null || true
+realpath /opt/seaweedfs 2>/dev/null || true
+```
+
+Sau đó:
+
+```bash
+sudo rm -rf /opt/tra_cuu_tthc
+sudo rm -rf /opt/seaweedfs
+```
+
+Không xóa:
+
+```text
+/home/deploy/.ssh
+/opt/backups
+/etc/ssh
+/etc/ufw
+```
+
+## A.5 Xóa cloudflared nếu cài systemd
+
+```bash
+sudo systemctl disable --now cloudflared 2>/dev/null || true
+sudo rm -f /etc/systemd/system/cloudflared.service
+sudo systemctl daemon-reload
+sudo rm -rf /etc/cloudflared
+```
+
+Nếu Cloudflare Tunnel chỉ chạy trong Docker Compose, bước này không cần.
+
+## A.6 Kiểm tra sạch
+
+```bash
+docker ps -a
+docker volume ls
+docker network ls
+ls -la /opt
+```
+
+## A.7 Clone lại
+
+```bash
+sudo mkdir -p /opt/tra_cuu_tthc
+sudo chown deploy:deploy /opt/tra_cuu_tthc
+git clone <REPO_URL> /opt/tra_cuu_tthc
+cd /opt/tra_cuu_tthc
+```
+
+Sau đó làm lại từ mục 3 của tài liệu này.
+
+Lưu ý: `.env` và `/opt/seaweedfs/s3.json` **không có trong Git**, phải tạo lại hoặc copy từ nơi an toàn.
+
+
+
 
 Không mở port 80/443 nếu dùng Cloudflare Tunnel.
