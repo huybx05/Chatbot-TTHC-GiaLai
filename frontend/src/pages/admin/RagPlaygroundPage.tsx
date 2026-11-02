@@ -46,9 +46,8 @@ const NHAN_KET_CUC: Record<string, string> = {
  *
  * ## Bây giờ
  *
- * Gọi `POST /api/admin/retrieval/test`. Chỉ chế độ `faq` đã triển khai
- * (Giai đoạn 10); các chế độ khác trả HTTP 503 kèm thông báo rõ, **không** trả số
- * liệu giả.
+ * Gọi `POST /api/admin/retrieval/test`. Các chế độ đang hiển thị đều có nhánh backend
+ * tương ứng; chế độ nào lỗi sẽ trả HTTP kèm thông báo rõ, **không** trả số liệu giả.
  *
  * ## Vì sao hiện top-K chứ không phải top-1
  *
@@ -58,11 +57,13 @@ const NHAN_KET_CUC: Record<string, string> = {
  */
 
 /**
- * Chế độ của trang kiểm thử.
+ * Các chế độ của trang kiểm thử.
  *
- * Sáu chế độ sau là **từng động cơ truy xuất chạy lẻ** — người kiểm thử chọn tay để xem một
+ * Năm chế độ sau là **từng động cơ truy xuất chạy lẻ** — người kiểm thử chọn tay để xem một
  * động cơ trả gì. `workflow` là **luồng chính**: hệ thống tự chọn nhánh, người dùng không
  * chọn. Nó đứng đầu danh sách vì đó là thứ người dân thật sự đi qua.
+ *
+ * FAQ không có ở đây: backend đã gỡ FAQ khỏi luồng truy xuất.
  */
 type PlaygroundMode = RetrievalMode | "workflow";
 
@@ -70,28 +71,58 @@ const MODES: Array<{
   value: PlaygroundMode;
   label: string;
   note: string;
+  description: string;
   icon: string;
   ready: boolean;
 }> = [
   {
     value: "workflow",
-    label: "Luồng chính",
-    note: "tự chọn nhánh",
+    label: "Luồng tự động",
+    note: "Tự chọn phương thức truy xuất",
+    description: "Hệ thống tự lựa chọn phương thức truy xuất phù hợp với câu hỏi.",
     icon: "route",
     ready: true,
   },
-  { value: "faq", label: "FAQ", note: "Qdrant + ngưỡng", icon: "quiz", ready: true },
-  { value: "keyword", label: "Keyword", note: "BM25", icon: "search", ready: true },
-  { value: "vector", label: "Vector", note: "Qdrant cosine", icon: "data_object", ready: true },
-  { value: "hybrid", label: "Hybrid", note: "RRF + rerank", icon: "join", ready: true },
+  {
+    value: "keyword",
+    label: "Từ khóa",
+    note: "BM25",
+    description: "Chỉ tìm theo từ khóa bằng BM25 trên chỉ mục văn bản.",
+    icon: "search",
+    ready: true,
+  },
+  {
+    value: "vector",
+    label: "Vector",
+    note: "Qdrant + cosine",
+    description: "Tìm theo ngữ nghĩa bằng vector trong Qdrant và độ tương đồng cosine.",
+    icon: "data_object",
+    ready: true,
+  },
+  {
+    value: "hybrid",
+    label: "Hybrid",
+    note: "RRF + Reranking",
+    description: "Kết hợp BM25 và vector, hợp nhất bằng RRF rồi xếp hạng lại.",
+    icon: "join",
+    ready: true,
+  },
   {
     value: "fact_lookup",
-    label: "Fact lookup",
-    note: "PostgreSQL · metadata",
+    label: "Tra cứu từ PostgreSQL",
+    note: "PostgreSQL",
+    description: "Tra trực tiếp thông tin định danh của thủ tục trong PostgreSQL.",
     icon: "database",
     ready: true,
   },
-  { value: "graph", label: "Graph", note: "Neo4j · quan hệ", icon: "hub", ready: true },
+  {
+    value: "graph",
+    label: "Đồ thị tri thức",
+    note: "Neo4j",
+    description: "Duyệt quan hệ thủ tục, văn bản và cơ quan trong đồ thị Neo4j.",
+    icon: "hub",
+    ready: true,
+  },
 ];
 
 /**
@@ -161,13 +192,12 @@ function mucNguCanh(danhSach: WorkflowEvidence[] | undefined, toiDa = 50): MucNg
  * Luồng chính. Hai câu trả lời khác nhau cho hai câu hỏi khác nhau, nên hai bảng nhãn riêng.
  */
 const NGUON_CUA_MODE: Record<PlaygroundMode, string> = {
-  workflow: "Luồng chính",
-  keyword: "Keyword",
+  workflow: "Luồng tự động",
+  keyword: "Từ khóa",
   vector: "Vector",
-  faq: "FAQ",
   hybrid: "Hybrid",
-  fact_lookup: "PostgreSQL",
-  graph: "Neo4j",
+  fact_lookup: "Tra cứu từ PostgreSQL",
+  graph: "Đồ thị tri thức",
 };
 /** Nhãn tiếng Việt cho `intent` — để đọc được ngay loại thông tin. */
 const INTENT_LABELS: Record<string, string> = {
@@ -334,12 +364,14 @@ export default function RagPlaygroundPage() {
     resetKetQua();
   }
 
+  const selectedMode = MODES.find((item) => item.value === mode);
+
   return (
     <>
       <PageHeader
-        eyebrow="Kiểm thử RAG"
-        title="Truy xuất và kiểm tra context"
-        description="Chạy một chiến lược truy xuất trên dữ liệu thật, xem điểm từng candidate so với ngưỡng và câu trả lời trước khi sinh."
+        eyebrow="KIỂM THỬ HỆ THỐNG TRUY XUẤT"
+        title="Kiểm thử và đánh giá kết quả truy xuất"
+        description="Thực hiện truy xuất trên dữ liệu thực tế, kiểm tra kết quả, điểm số và mức độ phù hợp của các tài liệu được tìm thấy."
       />
 
       <Card>
@@ -347,11 +379,12 @@ export default function RagPlaygroundPage() {
           <fieldset>
             <legend className="text-sm font-bold">Chọn cách chạy</legend>
             <p className="mt-1 text-xs text-text-secondary">
-              <span className="font-semibold text-text-primary">Luồng chính</span> để hệ thống
-              tự chọn nhánh · các mục còn lại chạy <span className="font-semibold">một</span>{" "}
-              động cơ truy xuất để so sánh từng tín hiệu.
+              <span className="font-semibold text-text-primary">
+                {selectedMode?.label ?? "Cách chạy"}:
+              </span>{" "}
+              {selectedMode?.description}
             </p>
-            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+            <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
               {MODES.map((item) => {
                 const active = item.value === mode;
                 return (

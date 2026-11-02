@@ -12,7 +12,6 @@ from backend.app.rag import contracts, evidence
 from backend.app.rag.types import Candidate
 from backend.app.workflow import answer, executor
 from backend.app.workflow.planner import Plan, Task
-from backend.app.workflow.state import new_state
 
 
 class _Grounding:
@@ -195,10 +194,6 @@ class _FakeVector:
 
 
 # ── trạng thái và trace ─────────────────────────────────────────────────
-
-
-def test_state_has_discovery_slot() -> None:
-    assert new_state("câu hỏi")["discovery"] == []
 
 
 def test_plan_is_not_evidence() -> None:

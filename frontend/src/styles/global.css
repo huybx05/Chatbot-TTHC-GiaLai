@@ -40,8 +40,10 @@
   /* Bo góc bổ sung ngoài thang mặc định */
   --radius-2xl: 0.875rem;
 
-  --font-sans: "Inter", sans-serif;
-  --font-body: "Inter", sans-serif;
+  /* Font: Inter cho toàn bộ nội dung và giao diện. */
+  --font-serif: "Inter", Arial, sans-serif;
+  --font-sans: "Inter", Arial, sans-serif;
+  --font-body: "Inter", Arial, sans-serif;
 }
 
 @layer base {
@@ -54,8 +56,39 @@
   body {
     overscroll-behavior: none;
     font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
     background-color: var(--color-main-bg);
     color: var(--color-text-primary);
+  }
+
+  /* Nội dung đọc */
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6,
+  p,
+  li,
+  blockquote {
+    font-family: var(--font-serif);
+  }
+
+  /* Giao diện điều khiển */
+  button,
+  input,
+  select,
+  textarea,
+  table,
+  nav {
+    font-family: var(--font-sans);
+  }
+
+  /* Bảng biểu là giao diện: không để p/li bên trong bảng kéo font serif. */
+  table p,
+  table li {
+    font-family: var(--font-sans);
   }
 
   /* Bản thiết kế gốc ẩn thanh cuộn */

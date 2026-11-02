@@ -85,6 +85,8 @@ class EvidenceItem(TypedDict, total=False):
     kind: str
     procedure_code: str
     procedure_name: str
+    #: Mã văn bản/quyết định khi evidence là văn bản pháp lý.
+    document_code: str
     #: Đường dẫn nguồn trên cổng dịch vụ công — **không bao giờ** để mô hình tự tạo.
     detail_url: str
     #: Loại mục của đoạn văn (``FEE``, ``STEPS``…) hoặc loại thông tin của bằng chứng đồ thị.
@@ -114,6 +116,8 @@ class EvidenceItem(TypedDict, total=False):
     verified: bool
     #: Vì sao mục này được coi là đã kiểm (mã thủ tục, section theo mã, Graph theo neo…).
     verification: str
+    #: Metadata block/case của chunk (``case_order``, ``case_name``...).
+    metadata: dict[str, Any]
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -135,7 +139,11 @@ def _content_tu_cot(row: dict[str, str], columns: Sequence[tuple[str, str, bool]
     mời mô hình viết ra ``vai_tro`` trong câu trả lời.
     """
     nhan = {khoa: nhan_cot for khoa, nhan_cot, _tach in columns}
-    phan = [f"{nhan.get(khoa, khoa)}: {gia_tri}" for khoa, gia_tri in row.items() if gia_tri]
+    phan = [
+        f"{nhan.get(khoa, khoa)}: {gia_tri}"
+        for khoa, gia_tri in row.items()
+        if gia_tri and khoa != "detail_url"
+    ]
     return " · ".join(phan)
 
 
@@ -162,6 +170,7 @@ def from_fact(fact: ProcedureFact) -> list[EvidenceItem]:
             EvidenceItem(
                 procedure_code=fact.ma_thu_tuc,
                 procedure_name=fact.ten_thu_tuc,
+                document_code="",
                 detail_url=fact.detail_url,
                 section_type="METADATA",
                 title=fact.ten_thu_tuc,
@@ -176,6 +185,7 @@ def from_fact(fact: ProcedureFact) -> list[EvidenceItem]:
                 result_kind=ResultKind.VERIFIED.value,
                 verified=True,
                 verification="postgres_fact_by_code",
+                metadata={},
             )
         ],
     )
@@ -199,9 +209,16 @@ def from_graph(evidence: GraphEvidence) -> list[EvidenceItem]:
             for row in part.rows:
                 ra.append(
                     EvidenceItem(
-                        procedure_code=str(row.get("ma_thu_tuc") or ""),
+                        procedure_code=str(
+                            row.get("ma_thu_tuc") or evidence.procedure_code or ""
+                        ),
                         procedure_name=str(row.get("ten") or subject),
-                        detail_url="",
+                        detail_url=str(
+                            row.get("detail_url") or evidence.detail_url or ""
+                        ),
+                        document_code=str(
+                            row.get("document_code") or evidence.document_code or ""
+                        ),
                         section_type=part.intent,
                         title=part.title,
                         content=_content_tu_cot(row, part.columns),
@@ -215,6 +232,7 @@ def from_graph(evidence: GraphEvidence) -> list[EvidenceItem]:
                         result_kind=ResultKind.VERIFIED.value,
                         verified=True,
                         verification="graph_template_with_anchor",
+                        metadata={},
                     )
                 )
         return _items(EvidenceKind.GRAPH, ra)
@@ -222,9 +240,14 @@ def from_graph(evidence: GraphEvidence) -> list[EvidenceItem]:
     for row in evidence.rows:
         ra.append(
             EvidenceItem(
-                procedure_code=str(row.get("ma_thu_tuc") or ""),
+                procedure_code=str(
+                    row.get("ma_thu_tuc") or evidence.procedure_code or ""
+                ),
                 procedure_name=str(row.get("ten") or subject),
-                detail_url="",
+                detail_url=str(row.get("detail_url") or evidence.detail_url or ""),
+                document_code=str(
+                    row.get("document_code") or evidence.document_code or ""
+                ),
                 section_type=evidence.template or evidence.intent,
                 title=evidence.title,
                 content=_content_tu_cot(row, evidence.columns),
@@ -238,6 +261,7 @@ def from_graph(evidence: GraphEvidence) -> list[EvidenceItem]:
                 result_kind=ResultKind.VERIFIED.value,
                 verified=True,
                 verification="graph_template_with_anchor",
+                metadata={},
             )
         )
     return _items(EvidenceKind.GRAPH, ra)
@@ -257,6 +281,7 @@ def from_chunks(candidates: Sequence[Candidate]) -> list[EvidenceItem]:
             EvidenceItem(
                 procedure_code=c.procedure_code,
                 procedure_name=c.procedure_name,
+                document_code="",
                 detail_url=c.detail_url,
                 section_type=c.section_type,
                 title=c.title,
@@ -275,6 +300,7 @@ def from_chunks(candidates: Sequence[Candidate]) -> list[EvidenceItem]:
                 result_kind=ResultKind.DISCOVERY.value,
                 verified=False,
                 verification="chunk_search_without_anchor",
+                metadata={},
             )
         )
     return _items(EvidenceKind.CHUNK, ra)
@@ -295,6 +321,7 @@ def from_sections(rows: Sequence[dict[str, Any]]) -> list[EvidenceItem]:
             EvidenceItem(
                 procedure_code=str(r.get("procedure_code") or ""),
                 procedure_name=str(r.get("procedure_name") or ""),
+                document_code="",
                 detail_url=str(r.get("detail_url") or ""),
                 section_type=str(r.get("section_type") or ""),
                 title=str(r.get("title") or ""),
@@ -309,6 +336,7 @@ def from_sections(rows: Sequence[dict[str, Any]]) -> list[EvidenceItem]:
                 result_kind=ResultKind.VERIFIED.value,
                 verified=True,
                 verification="postgres_section_by_code_and_facet",
+                metadata=dict(r.get("metadata") or {}),
             )
         )
     return _items(EvidenceKind.SECTION, ra)

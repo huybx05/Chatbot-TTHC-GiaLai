@@ -710,6 +710,55 @@ def _documents_text(detail: dict[str, Any]) -> str:
     return "\n".join(lines).strip()
 
 
+def _execution_cases(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    """Giữ nguyên cấu trúc ``executionCases`` thay vì làm phẳng thành text.
+
+    Mỗi case và component là một đơn vị nghiệp vụ; tên case không phải lúc nào cũng
+    có dấu ``(1.1)`` nên không được suy cấu trúc từ dấu câu.
+    """
+    cases: list[dict[str, Any]] = []
+    for order, case in enumerate(detail.get("executionCases") or [], start=1):
+        components: list[dict[str, Any]] = []
+        for index, item in enumerate(case.get("profileComponents") or [], start=1):
+            components.append(
+                {
+                    "component_index": index,
+                    "profile_component_id": _text(item.get("profileComponentId")),
+                    "name": _text(item.get("name")),
+                    "original_qty": int(item.get("originalQty") or 0),
+                    "copy_qty": int(item.get("copyQty") or 0),
+                    "required": bool(item.get("required")),
+                    "has_electronic_form": bool(item.get("hasElectronicForm")),
+                    "attachments": [
+                        {
+                            "file_id": _text(attachment.get("id")),
+                            "file_name": _text(attachment.get("fileName")),
+                        }
+                        for attachment in (item.get("attachments") or [])
+                        if _text(attachment.get("fileName"))
+                    ],
+                    "source_path": (
+                        f"executionCases[{order - 1}]"
+                        f".profileComponents[{index - 1}]"
+                    ),
+                }
+            )
+        case_name = _text(case.get("name"))
+        if not case_name and not components:
+            continue
+        cases.append(
+            {
+                "case_order": order,
+                "case_code": _text(case.get("code")),
+                "case_name": case_name,
+                "components": components,
+                "processing_day": case.get("processingDay") or {},
+                "source_path": f"executionCases[{order - 1}]",
+            }
+        )
+    return cases
+
+
 def _legal_basis_text(documents: list[dict[str, Any]] | None) -> str:
     """Dựng bảng căn cứ pháp lý dạng text có tab, giống file mẫu."""
     if not documents:
@@ -777,6 +826,7 @@ def transform(
         "trinh_tu_thuc_hien": _steps_text(detail.get("executionSteps")),
         "cach_thuc_thuc_hien": _submission_method_text(methods),
         "thanh_phan_ho_so": _documents_text(detail),
+        "execution_cases": _execution_cases(detail),
         "can_cu_phap_ly": _legal_basis_text(detail.get("legalBasisesDetails")),
         "co_quan_thuc_hien": _join_names(detail.get("departmentsExecuting")),
         "yeu_cau_dieu_kien": _or_no_information(detail.get("requirementsAndConditions")),

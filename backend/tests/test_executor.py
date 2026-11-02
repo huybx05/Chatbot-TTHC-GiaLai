@@ -39,7 +39,7 @@ def _evidence(index: int) -> dict:
 
 
 def test_covered_tasks_run_in_parallel_and_keep_user_order(monkeypatch) -> None:
-    async def fake_section(task):
+    async def fake_section(task, question):
         return executor.ToolResult([_evidence(task.request_index)])
 
     async def fake_graph(task, question, vector_source):
@@ -64,7 +64,7 @@ def test_covered_tasks_run_in_parallel_and_keep_user_order(monkeypatch) -> None:
 def test_empty_section_falls_back_to_hybrid(monkeypatch) -> None:
     goi = {"hybrid": 0}
 
-    async def fake_section(task):
+    async def fake_section(task, question):
         return executor.ToolResult([])
 
     async def fake_hybrid(task, question, vector_source):
@@ -85,10 +85,58 @@ def test_empty_section_falls_back_to_hybrid(monkeypatch) -> None:
     assert execution.fallbacks == [(0, "section_lookup", "hybrid")]
 
 
+def test_empty_graph_falls_back_to_hybrid(monkeypatch) -> None:
+    goi = {"hybrid": 0}
+
+    async def fake_graph(task, question, vector_source):
+        return executor.ToolResult([])
+
+    async def fake_hybrid(task, question, vector_source):
+        goi["hybrid"] += 1
+        return executor.ToolResult([_evidence(task.request_index)])
+
+    monkeypatch.setattr(executor, "_run_graph", fake_graph)
+    monkeypatch.setattr(executor, "_run_hybrid", fake_hybrid)
+
+    plan = Plan(tasks=[_task(0, "graph", "implementing_agency")])
+    execution = asyncio.run(executor.execute_plan(_state(), plan))
+
+    assert goi["hybrid"] == 1
+    coverage = execution.coverage[0]
+    assert coverage.status == "covered"
+    assert coverage.fallback_from == "graph"
+    assert coverage.fallback_to == "hybrid"
+    assert execution.fallbacks == [(0, "graph", "hybrid")]
+
+
+def test_graph_success_does_not_fallback(monkeypatch) -> None:
+    goi = {"hybrid": 0}
+
+    async def fake_graph(task, question, vector_source):
+        return executor.ToolResult([_evidence(task.request_index)])
+
+    async def fake_hybrid(task, question, vector_source):
+        goi["hybrid"] += 1
+        return executor.ToolResult([_evidence(task.request_index)])
+
+    monkeypatch.setattr(executor, "_run_graph", fake_graph)
+    monkeypatch.setattr(executor, "_run_hybrid", fake_hybrid)
+
+    execution = asyncio.run(
+        executor.execute_plan(
+            _state(), Plan(tasks=[_task(0, "graph", "implementing_agency")])
+        )
+    )
+
+    assert goi["hybrid"] == 0
+    assert execution.coverage[0].status == "covered"
+    assert execution.coverage[0].fallback_from == ""
+
+
 def test_fallback_runs_at_most_once(monkeypatch) -> None:
     goi = {"hybrid": 0}
 
-    async def fake_section(task):
+    async def fake_section(task, question):
         return executor.ToolResult([])
 
     async def fake_hybrid(task, question, vector_source):
@@ -106,7 +154,7 @@ def test_fallback_runs_at_most_once(monkeypatch) -> None:
 
 
 def test_failed_tool_is_reported_per_request(monkeypatch) -> None:
-    async def fake_section(task):
+    async def fake_section(task, question):
         if task.request_index == 1:
             raise RuntimeError("PostgreSQL sập")
         return executor.ToolResult([_evidence(task.request_index)])
@@ -139,7 +187,7 @@ def test_all_failed_flag() -> None:
 
 
 def test_unsupported_requests_get_coverage(monkeypatch) -> None:
-    async def fake_section(task):
+    async def fake_section(task, question):
         return executor.ToolResult([_evidence(task.request_index)])
 
     monkeypatch.setattr(executor, "_run_section", fake_section)

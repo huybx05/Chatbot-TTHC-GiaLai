@@ -10,14 +10,14 @@ Sáu nhãn (đóng):
 out_of_scope  ngoài TTHC / smalltalk → không truy xuất
 unsupported   operation/facet chưa có công cụ, hoặc câu điều kiện pháp lý
               mà dữ liệu TTHC không trả lời được
-clarify       có ý trỏ tới mention mà grounding báo mơ hồ / cần tiền ngữ
+clarify       có ý trỏ tới mention mà grounding báo mơ hồ / cần tiền ngữ,
+              hoặc chưa nêu chủ thể
 composed      ≥ 2 ý, tất cả đều xử lý được
-discovery     chưa xác định thủ tục và không có mention để hỏi lại
 direct        1 ý, đã xác định thủ tục/thực thể
 ```
 
 Thứ tự ưu tiên khi gán nhãn cho cả lượt:
-``out_of_scope > unsupported > clarify > composed > discovery > direct``.
+``out_of_scope > unsupported > clarify > composed > direct``.
 
 Ngoài nhãn lượt, mỗi ý có **nhãn riêng** (cùng bộ giá trị) để không mất chi tiết khi câu có
 nhiều ý bị trộn trạng thái.
@@ -43,13 +43,12 @@ class PlanClass(StrEnum):
     UNSUPPORTED = "unsupported"
     CLARIFY = "clarify"
     COMPOSED = "composed"
-    DISCOVERY = "discovery"
     DIRECT = "direct"
 
 
 #: Operation chưa có primitive tương ứng.
 UNSUPPORTED_OPERATIONS = frozenset(
-    {RequestOperation.COMPARE.value, RequestOperation.RANK.value}
+    {RequestOperation.RANK.value}
 )
 #: Facet chưa có primitive tương ứng.
 UNSUPPORTED_FACETS = frozenset({Facet.RELATED_PROCEDURES.value, Facet.UNKNOWN.value})
@@ -130,7 +129,7 @@ def classify_request(
         return PlanClass.UNSUPPORTED, "điều kiện pháp lý chưa có nguồn trả lời"
 
     if ref is None:
-        return PlanClass.DISCOVERY, "chưa có chủ thể, cần tìm thủ tục trước"
+        return PlanClass.CLARIFY, "chưa có chủ thể, cần hỏi lại"
 
     if status == "resolved":
         return PlanClass.DIRECT, "chủ thể đã xác định"
@@ -146,8 +145,8 @@ def classify_request(
 def classify_turn(frame: QuestionFrame, groundings: Sequence[Any]) -> PlanClassResult:
     """Nhãn cho cả lượt + nhãn từng ý. Tất định, không gọi mô hình.
 
-    Thứ tự ưu tiên: ``out_of_scope > unsupported > clarify > composed > discovery >
-    direct``. Nhãn lượt nói **nguồn lực chính** cần dùng; nhãn từng ý giữ chi tiết.
+    Thứ tự ưu tiên: ``out_of_scope > unsupported > clarify > composed > direct``.
+    Nhãn lượt nói **nguồn lực chính** cần dùng; nhãn từng ý giữ chi tiết.
     """
     scope = frame.get("scope")
     if scope in {QuestionScope.OUT_OF_SCOPE, QuestionScope.SMALLTALK}:
@@ -176,8 +175,6 @@ def classify_turn(frame: QuestionFrame, groundings: Sequence[Any]) -> PlanClassR
         return PlanClassResult(
             PlanClass.COMPOSED, f"{len(requests)} ý xử lý được", tuple(per_request)
         )
-    if classes[0] is PlanClass.DISCOVERY:
-        return PlanClassResult(PlanClass.DISCOVERY, per_request[0].reason, tuple(per_request))
     return PlanClassResult(PlanClass.DIRECT, per_request[0].reason, tuple(per_request))
 
 

@@ -98,7 +98,7 @@ from data_pipeline.processing.normalizer import is_sentinel
 CHAR_LIMIT = 4500
 
 #: Phiên bản bộ chunker. Đổi khi luật cắt thay đổi để phân biệt chunk cũ / mới.
-CHUNKER_VERSION = "5.0"
+CHUNKER_VERSION = "6.0"
 
 #: Câu thay thế cho mọi giá trị sentinel. KHÔNG nói "không có" — xem docstring module.
 SENTINEL_TEXT = "cổng chưa ghi nhận thông tin"
@@ -603,6 +603,104 @@ def body_budget(record: dict[str, Any], section: str, header: str) -> int:
     return max(1, CHAR_LIMIT - len(header) - 1)
 
 
+def _case_blocks(record: dict[str, Any]) -> list[dict[str, Any]]:
+    """Sinh block theo ``execution_cases``; không phụ thuộc dấu ``(1.1)``."""
+    cases = record.get("execution_cases") or []
+    if not isinstance(cases, list) or not cases:
+        return []
+    blocks: list[dict[str, Any]] = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        case_name = str(case.get("case_name") or "").strip()
+        components = case.get("components") or []
+        if not components:
+            blocks.append(
+                {
+                    "body": f"Trường hợp: {case_name}." if case_name else "Trường hợp áp dụng.",
+                    "case_order": int(case.get("case_order") or 0),
+                    "case_code": str(case.get("case_code") or ""),
+                    "case_name": case_name,
+                    "component_index": 0,
+                    "block_heading": case_name or "Trường hợp áp dụng",
+                    "source_path": str(case.get("source_path") or ""),
+                    "part": 1,
+                }
+            )
+            continue
+        for component in components:
+            if not isinstance(component, dict):
+                continue
+            name = str(component.get("name") or "").strip()
+            if not name:
+                continue
+            original = int(component.get("original_qty") or 0)
+            copies = int(component.get("copy_qty") or 0)
+            quantity = []
+            if original:
+                quantity.append(f"{original} bản chính")
+            if copies:
+                quantity.append(f"{copies} bản sao")
+            suffix = f" ({', '.join(quantity)})" if quantity else ""
+            body = (
+                f"Trường hợp: {case_name}\n- {name}{suffix}"
+                if case_name
+                else f"- {name}{suffix}"
+            )
+            blocks.append(
+                {
+                    "body": body,
+                    "case_order": int(case.get("case_order") or 0),
+                    "case_code": str(case.get("case_code") or ""),
+                    "case_name": case_name,
+                    "component_index": int(component.get("component_index") or 0),
+                    "profile_component_id": str(
+                        component.get("profile_component_id") or ""
+                    ),
+                    "attachments": list(component.get("attachments") or []),
+                    "block_heading": name,
+                    "source_path": str(component.get("source_path") or ""),
+                    "part": 1,
+                }
+            )
+    return blocks
+
+
+def _build_case_chunks(
+    record: dict[str, Any], blocks: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Chunk theo case/component, giữ metadata để retrieval lọc đúng case."""
+    code = str(record.get("ma_thu_tuc") or "").strip()
+    section = "REQUIRED_DOCUMENTS"
+    metadata = _chunk_metadata(record)
+    full = full_header(record, section)
+    out: list[dict[str, Any]] = []
+    for block in blocks:
+        budget = body_budget(record, section, full)
+        parts = _merge_units([block["body"]], budget)
+        for part_index, part in enumerate(parts, start=1):
+            order = len(out) + 1
+            head = full if order == 1 else compact_header(record, section)
+            text = f"{head}\n{part}".strip()
+            item = dict(block)
+            item["part"] = part_index
+            out.append(
+                {
+                    "chunk_id": make_chunk_id(code, section, order),
+                    "procedure_code": code,
+                    "section_type": section,
+                    "section_title": SECTION_TITLES.get(section, section),
+                    "chunk_order": order,
+                    "text": text,
+                    "char_count": len(text),
+                    "chunker_version": CHUNKER_VERSION,
+                    **metadata,
+                    "metadata": item,
+                }
+            )
+    return out
+
+
 def chunk_record(record: dict[str, Any]) -> list[dict[str, Any]]:
     """Sinh toàn bộ chunk của một bản ghi 29 trường.
 
@@ -630,6 +728,11 @@ def chunk_record(record: dict[str, Any]) -> list[dict[str, Any]]:
     )
 
     for field, section in FIELD_TO_SECTION.items():
+        if field == "thanh_phan_ho_so":
+            blocks = _case_blocks(record)
+            if blocks:
+                out.extend(_build_case_chunks(record, blocks))
+                continue
         header = full_header(record, section)
         _emit(
             section,

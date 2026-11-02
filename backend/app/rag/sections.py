@@ -31,9 +31,11 @@ KHIA_CANH_SANG_SECTION: dict[str, tuple[str, ...]] = {
     "required_documents": ("REQUIRED_DOCUMENTS",),
     "steps": ("STEPS",),
     "submission_method": ("SUBMISSION_METHOD",),
+    "receiving_agency": ("STEPS", "GENERAL_INFO"),
     "processing_time": ("PROCESSING_TIME",),
     "fee": ("FEE",),
     "result": ("RESULT",),
+    "result_delivery": ("RESULT_DELIVERY",),
     "legal_basis": ("LEGAL_BASIS",),
     "requirements": ("REQUIREMENTS",),
     "general_info": ("GENERAL_INFO",),
@@ -88,7 +90,7 @@ def _doc(codes: list[str], sections: list[str]) -> list[dict[str, Any]]:
     sql = text(
         """
         SELECT s.procedure_code, s.section_type, s.title, s.content, s.detail_url,
-               p.procedure_name
+               s.metadata, p.procedure_name
         FROM procedure_sections AS s
         LEFT JOIN procedures AS p ON p.procedure_code = s.procedure_code
         WHERE s.procedure_code = ANY(:codes)

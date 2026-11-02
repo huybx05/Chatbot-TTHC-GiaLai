@@ -57,14 +57,30 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any
+from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
 
-from backend.app.rag import contracts, embeddings, grounding, resolve, scope
+from backend.app.db.postgres import engine
+from backend.app.memory.reader import load_topic_turns
+from backend.app.memory.resolver import (
+    apply_memory_anchor_to_groundings,
+    apply_memory_antecedent,
+    apply_memory_to_groundings,
+)
+from backend.app.rag import embeddings, graph_query, grounding, resolve, scope
 from backend.app.rag.evidence import Branch
 from backend.app.rag.resolver import ProcedureResolution
 from backend.app.workflow import answer, executor, nodes, plan_class, planner, question_parser
+from backend.app.workflow.identity import (
+    answered_procedure,
+    candidates_from_groundings,
+    candidates_from_resolution,
+    grounded_procedure,
+    merge_candidates,
+)
 from backend.app.workflow.router_rules import RouterDecision, decide
 from backend.app.workflow.state import (
     AgentState,
@@ -261,6 +277,7 @@ async def node_dinh_danh(state: AgentState) -> dict[str, Any]:
     vector = await embeddings.embed(cau)
     dau_vet = resolve.remember_vector(vector)
     ket_qua = await resolve.resolve(cau, vector=vector)
+    apply_memory_antecedent(ket_qua, state.get("memory"))
 
     # Vá của bộ định danh **trước**, rồi mới ghi đè phần vector: ``state_patch`` mang
     # ``vector_hash=""`` cho câu chưa nhúng, nên nếu ghi đè trước thì dấu vết bị xoá và bước
@@ -291,9 +308,38 @@ async def node_router(state: AgentState) -> dict[str, Any]:
 
     nguon_vector = _GroundingVector(state, cau)
     quyet_dinh, ly_do_du_phong, frame, groundings, grounding_ms = await _chon_nhanh(
-        cau, ket_qua, get_vector=nguon_vector.get
+        cau,
+        ket_qua,
+        memory=state.get("memory"),
+        memory_anchor=state.get("memory_anchor"),
+        original_question=str(state.get("original_question") or cau),
+        get_vector=nguon_vector.get,
     )
     quyet_dinh = _abstain_khi_co_lua_chon(quyet_dinh, ket_qua)
+    frame_missing_subject = bool(
+        frame
+        and frame.get("ambiguity", {}).get("present")
+        and str(frame.get("ambiguity", {}).get("kind") or "") == "subject"
+        and not frame.get("subject_mentions")
+    )
+    memory_view = dict(state.get("memory") or {})
+    missing_pronoun = bool(
+        graph_query.demonstrative_position(cau) >= 0
+        and not memory_view.get("active_procedure")
+        and not ket_qua.codes
+    )
+    if (
+        ket_qua.needs_antecedent or frame_missing_subject or missing_pronoun
+    ) and quyet_dinh.signal != BranchSignal.CLARIFY.value:
+        # Đại từ không có tiền ngữ, hoặc parser báo thiếu chủ thể: không được
+        # để resolver/vector biến câu mơ hồ thành một thủ tục cụ thể.
+        quyet_dinh = replace(
+            quyet_dinh,
+            branch="",
+            signal=BranchSignal.CLARIFY.value,
+            reason="câu thiếu chủ thể hoặc đại từ không có tiền ngữ",
+            clarify=ClarifyInfo(question="", options=[]),
+        )
 
     patch: dict[str, Any] = {
         "branch": quyet_dinh.branch,
@@ -313,7 +359,10 @@ async def node_router(state: AgentState) -> dict[str, Any]:
         patch["question_frame"] = frame
         # Planner tất định: biến frame + grounding thành task. Giai đoạn 5 sẽ thực thi plan;
         # ở đây ghi vào trace để biết hệ thống **định** truy xuất gì, không đổi nhánh đang chạy.
-        patch["plan"] = planner.plan_retrieval(frame, groundings).to_dict()
+        patch["plan"] = planner.plan_retrieval(
+            frame,
+            groundings,
+        ).to_dict()
         # Nhãn nguồn lực suy bằng mã nguồn (không phải nhãn nhánh của router cũ).
         phan_loai = plan_class.classify_turn(frame, groundings)
         patch["plan_class"] = phan_loai.plan_class.value
@@ -321,11 +370,20 @@ async def node_router(state: AgentState) -> dict[str, Any]:
         patch["request_plan_class"] = [item.to_dict() for item in phan_loai.requests]
     if groundings:
         patch["groundings"] = [item.to_dict() for item in groundings]
-    # Ứng viên (giả thuyết) tách khỏi bằng chứng: ghi vào trace để bước sau dùng, tuyệt đối
-    # không đưa vào danh sách evidence.
-    candidates = contracts.from_groundings(groundings, ket_qua)
-    if candidates:
-        patch["discovery"] = [item.to_dict() for item in candidates]
+
+    # Ba tầng procedure: candidate từ resolver/grounding, grounded đã xác nhận,
+    # answered chỉ được set ở bước kết thúc khi có evidence.
+    candidate_resolution = dict(ket_qua.state_patch().get("resolution") or {})
+    identity_candidates = merge_candidates(
+        candidates_from_resolution(candidate_resolution),
+        candidates_from_groundings(groundings),
+    )
+    if identity_candidates:
+        patch["candidate_procedures"] = identity_candidates
+    grounded_identity = grounded_procedure(candidate_resolution, groundings)
+    if grounded_identity:
+        patch["grounded_procedure"] = grounded_identity
+
     if nguon_vector.used:
         # Grounding đã dùng vector (nhúng hoặc lấy lại) — ghi đúng thực tế để phép đo
         # "mỗi câu nhúng tối đa một lần" không bị sai.
@@ -339,7 +397,9 @@ async def node_router(state: AgentState) -> dict[str, Any]:
     # Mã người dùng gõ trực tiếp đã được PostgreSQL xác minh là neo mạnh nhất. Nếu không có
     # neo đó, kết quả grounding thay thế kết quả resolver toàn câu để các nhánh truy xuất dùng
     # đúng subject mà QuestionFrame đã trỏ tới.
-    if grounded is not None and not list(state.get("codes") or []):
+    if grounded is not None and not str(
+        (state.get("resolution") or {}).get("code") or ""
+    ):
         patch["resolution"] = {
             **dict(state.get("resolution") or {}),
             "code": grounded.code,
@@ -348,6 +408,44 @@ async def node_router(state: AgentState) -> dict[str, Any]:
             "confidence": grounded.score,
             "note": grounded.note or "thủ tục do grounding xác định",
         }
+
+    # Nếu parser/grounding chọn một topic cũ không còn trong recent turns,
+    # kéo lại tối đa 2 cặp Q/A của topic đó để working memory có ngữ cảnh.
+    memory_view = dict(state.get("memory") or {})
+    selected_code = str(getattr(grounded, "code", "") or "")
+    topic_codes = {
+        str(topic.get("procedure_code") or "")
+        for topic in (memory_view.get("topics") or [])
+        if isinstance(topic, dict)
+    }
+    recent_codes = {
+        str(turn.get("procedure_code") or "")
+        for turn in (memory_view.get("recent_turns") or [])
+        if isinstance(turn, dict)
+    }
+    if (
+        selected_code
+        and selected_code in topic_codes
+        and selected_code not in recent_codes
+        and memory_view.get("session_id")
+        and memory_view.get("user_id")
+    ):
+        try:
+            with engine.connect() as conn:
+                recalled = load_topic_turns(
+                    conn,
+                    user_id=int(memory_view["user_id"]),
+                    session_id=UUID(str(memory_view["session_id"])),
+                    procedure_code=selected_code,
+                )
+            if recalled:
+                memory_view["recalled_turns"] = [
+                    turn.to_dict() for turn in recalled
+                ]
+                patch["memory"] = memory_view
+        except Exception:  # noqa: BLE001
+            logger.warning("memory recall thất bại", exc_info=True)
+
     if quyet_dinh.branch:
         # Chỉ nhánh chạy thật mới cần cộng thời gian quyết định vào ``router_ms``. Câu bị
         # đưa sang hỏi lại / từ chối vẫn có chi phí, nhưng ghi ở đây là đủ để đo.
@@ -363,7 +461,20 @@ async def node_router(state: AgentState) -> dict[str, Any]:
             "grounding_ms": grounding_ms,
         }
         if quyet_dinh.signal == BranchSignal.CLARIFY.value:
-            patch["clarify"] = _clarify_co_lua_chon(quyet_dinh, ket_qua)
+            clarify = _clarify_co_lua_chon(quyet_dinh, ket_qua)
+            if not clarify.get("options"):
+                for item in groundings:
+                    if item.status == "ambiguous" and item.alternatives:
+                        clarify["options"] = [
+                            {
+                                "value": str(option.get("code") or ""),
+                                "label": str(option.get("name") or option.get("code") or ""),
+                                "hint": f"mã {option.get('code') or ''}",
+                            }
+                            for option in item.alternatives
+                        ]
+                        break
+            patch["clarify"] = clarify
     return patch
 
 
@@ -467,6 +578,9 @@ async def _chon_nhanh(
     ket_qua: resolve.Resolution,
     *,
     get_vector: Callable[[], Awaitable[list[float]]] | None = None,
+    memory: dict[str, Any] | None = None,
+    memory_anchor: dict[str, Any] | None = None,
+    original_question: str | None = None,
 ) -> tuple[RouterDecision, str, dict | None, list[grounding.SubjectGrounding], int]:
     """Phân tích QuestionFrame, grounding mention, rồi ánh xạ sang luồng hiện tại.
 
@@ -477,7 +591,12 @@ async def _chon_nhanh(
         return decide(ket_qua), "tắt semantic parser bằng cấu hình", None, [], 0
 
     try:
-        parsed = await question_parser.parse_question(question, ket_qua)
+        parsed = await question_parser.parse_question(
+            question,
+            ket_qua,
+            memory=memory,
+            original_question=original_question,
+        )
     except question_parser.QuestionParserError as exc:
         logger.warning("Semantic parser lỗi, rơi về router luật: %s", exc.reason)
         return decide(ket_qua), exc.reason, None, [], 0
@@ -486,6 +605,13 @@ async def _chon_nhanh(
     items = await grounding.ground_frame(
         parsed.frame, ket_qua, question=question, get_vector=get_vector
     )
+    apply_memory_anchor_to_groundings(
+        items,
+        memory_anchor,
+        resolution=ket_qua,
+        original_question=original_question,
+    )
+    apply_memory_to_groundings(items, memory, resolution=ket_qua)
     grounding_ms = int((time.perf_counter() - started) * 1000)
     decision = question_parser.to_router_decision(parsed, ket_qua, items)
     return decision, "", parsed.frame, items, grounding_ms
@@ -573,24 +699,11 @@ async def node_tu_choi(state: AgentState) -> dict[str, Any]:
     }
 
 
-#: Lời hướng dẫn khi **không có lựa chọn nào** để đưa ra. Hỏi "bạn muốn hỏi thủ tục nào?" mà
-#: không kèm gì là ngõ cụt: người dùng không biết phải trả lời thế nào cho đúng định dạng.
-HUONG_DAN_CHON = (
-    "Tôi cần biết bạn muốn hỏi thủ tục nào. Hãy cho tôi **mã thủ tục** (ví dụ 1.001699) "
-    "hoặc **tên thủ tục**, rồi hỏi lại."
-)
-
-
 async def node_hoi_lai(state: AgentState) -> dict[str, Any]:
-    """Bước ⑥: hỏi lại — nhưng chỉ khi thật sự có thứ để người dùng chọn.
+    """Bước ⑥: hỏi lại để người dùng tự mô tả lại câu hỏi.
 
-    Hai kết cục, phân biệt bằng **có lựa chọn hay không**:
-
-    * có ≥ 1 lựa chọn → hỏi lại bình thường, người dùng chọn một cái là xong;
-    * không có lựa chọn nào → đây không phải "hỏi lại" mà là "chưa đủ thông tin để tra": đổi
-      thành **từ chối** kèm hướng dẫn cụ thể. Đo được: câu *"Bộ Y tế quy định thủ tục nào về
-      khuyết tật?"* và *"chuyển nhượng đất cho con ruột…"* đều rơi vào trạng thái hỏi-rỗng
-      này, tức người dùng bị chặn mà không có gì để chọn.
+    Không có lựa chọn cũng vẫn là ``clarify`` — API trả câu hướng dẫn mô tả lại,
+    không đổi thành ``abstained``.
     """
     return {
         "outcome": Outcome.CLARIFY.value,
@@ -623,22 +736,35 @@ async def node_ket_thuc(state: AgentState) -> dict[str, Any]:
     if ket_cuc is Outcome.CLARIFY:
         hien_co = state.get("clarify") or {}
         if not (hien_co.get("options") or []):
-            # Hỏi lại mà **không có lựa chọn nào** là ngõ cụt: người dùng không biết trả lời
-            # thế nào. Đổi thành lời từ chối kèm hướng dẫn cụ thể.
-            #
-            # Đặt ở **bước kết thúc** chứ không ở bước hỏi lại, vì câu hỏi lại còn đến từ hai
-            # đường khác: router và chính nhánh đồ thị (khi đồ thị cần mã mà không có). Đây là
-            # điểm ra duy nhất nên không đường nào lọt.
-            patch["outcome"] = Outcome.ABSTAINED.value
-            patch["branch_signal"] = BranchSignal.EMPTY.value
-            patch["refusal"] = HUONG_DAN_CHON
+            alternatives = (state.get("resolution") or {}).get("alternatives") or []
+            if alternatives:
+                patch["clarify"] = {
+                    "question": "Bạn muốn tra cứu thủ tục nào?",
+                    "options": [
+                        {
+                            "value": str(item.get("code") or ""),
+                            "label": str(item.get("name") or item.get("code") or ""),
+                            "hint": f"mã {item.get('code') or ''}",
+                        }
+                        for item in alternatives[:5]
+                    ],
+                }
+                return patch
+
+            # Hỏi lại không có lựa chọn vẫn là clarify: người dùng tự mô tả lại.
+            # Không đổi thành abstained, vì API đã có câu hướng dẫn riêng cho clarify.
             patch["clarify"] = {"question": "", "options": []}
-            patch["branch_reason"] = (
-                str(state.get("branch_reason") or "")
-                + " · không có lựa chọn nào để đưa ra nên chuyển thành hướng dẫn"
-            ).lstrip(" ·")
         elif not hien_co.get("question"):
             patch["clarify"] = _noi_dung_hoi_lai(state)
+
+    answered = answered_procedure(
+        state.get("resolution") or {},
+        state.get("grounded_procedure") or {},
+        state.get("evidence") or [],
+        str(patch.get("outcome") or ket_cuc.value),
+    )
+    if answered:
+        patch["answered_procedure"] = answered
     return patch
 
 
@@ -652,6 +778,10 @@ LOI_KE_HOACH = {
     "UNSUPPORTED_OPERATION": (
         "Hệ thống chưa hỗ trợ phép so sánh hoặc xếp hạng thủ tục. "
         "Bạn có thể hỏi về hồ sơ, thời hạn, phí, cơ quan hoặc căn cứ pháp lý của một thủ tục."
+    ),
+    "COMPARE_REQUIRES_TWO_PROCEDURES": (
+        "Để so sánh, tôi cần xác định được hai thủ tục cụ thể. "
+        "Bạn vui lòng nêu mã hoặc tên của cả hai thủ tục."
     ),
     "UNSUPPORTED_FACET": (
         "Hệ thống chưa có dữ liệu cho loại thông tin này. "
@@ -800,7 +930,7 @@ async def node_sinh(state: AgentState) -> dict[str, Any]:
     if not answer.dang_bat():
         return {"answer_error": "chưa cấu hình mô hình sinh câu trả lời"}
 
-    cau = str(state.get("question") or "")
+    cau = str(state.get("original_question") or state.get("question") or "")
     evidence = list(state["evidence"])
     thieu = list(state.get("thieu") or [])
     requests = list((state.get("question_frame") or {}).get("requests") or [])
@@ -813,6 +943,7 @@ async def node_sinh(state: AgentState) -> dict[str, Any]:
             thieu=thieu,
             requests=requests,
             coverage=coverage,
+            preferred_name=str((state.get("memory") or {}).get("preferred_name") or ""),
         )
     except answer.AnswerError as exc:
         logger.warning("Không sinh được câu trả lời: %s", exc.reason)
@@ -821,13 +952,47 @@ async def node_sinh(state: AgentState) -> dict[str, Any]:
             "timings": {**dict(state.get("timings") or {}), "generate_ms": 0},
         }
 
+    issues = answer.verify_contract(
+        ket_qua.text,
+        evidence,
+        thieu=thieu,
+        requests=requests,
+        coverage=coverage,
+    )
+    if issues:
+        fallback = answer.build_fallback_answer(
+            evidence,
+            requests=requests,
+            coverage=coverage,
+        )
+        if fallback:
+            logger.warning("Câu trả lời vi phạm hợp đồng, dùng fallback: %s", issues[:3])
+            return {
+                "answer": fallback,
+                "citations": list(
+                    answer.build_citations(evidence, requests=requests, coverage=coverage)
+                ),
+                "answer_error": "",
+                "verification": {
+                    "status": "fallback",
+                    "issues": issues,
+                },
+                "timings": {**dict(state.get("timings") or {}), "generate_ms": ket_qua.ms},
+                "tokens": {
+                    "input": int((state.get("tokens") or {}).get("input", 0)),
+                    "output": int((state.get("tokens") or {}).get("output", 0)),
+                },
+            }
     return {
         "answer": ket_qua.text,
         "citations": list(ket_qua.citations),
         "answer_error": "",
         # Evidence, coverage and the prompt are fully prepared before the model starts. Do not
         # verify or replace its text here: the SSE path must expose the same one-pass answer.
-        "verification": {"status": "skipped", "issues": []},
+        "verification": {
+            "status": "passed" if not issues else "blocked",
+            "issues": issues,
+        },
         "timings": {**dict(state.get("timings") or {}), "generate_ms": ket_qua.ms},
         "tokens": {
             "input": int((state.get("tokens") or {}).get("input", 0)) + ket_qua.tokens_in,
@@ -891,11 +1056,16 @@ def sau_khi_router(state: AgentState) -> str:
     gì" trong khi thật ra là "chưa nhúng".
     """
     nhanh = str(state.get("branch") or "")
+    signal = str(state.get("branch_signal") or "")
+    if signal == BranchSignal.CLARIFY.value:
+        return HOI_LAI
+    if signal == BranchSignal.EMPTY.value:
+        return TU_CHOI
     # Plan do semantic parser sinh thì executor là **đường chạy duy nhất**, kể cả khi plan
     # rỗng hoặc chỉ có ``unsupported``. Nếu để rơi về nhánh cũ, quyết định "không hỗ trợ"
     # của planner bị bỏ qua và Graph/Hybrid vẫn truy xuất.
     plan = state.get("plan") or {}
-    if nhanh and (plan.get("tasks") or plan.get("unsupported")):
+    if plan.get("tasks") or plan.get("unsupported"):
         return THUC_THI
     if nhanh in CAN_VECTOR and not state.get("vector_hash"):
         return NHUNG_BO_SUNG
@@ -903,8 +1073,6 @@ def sau_khi_router(state: AgentState) -> str:
         return nhanh
     # Không nhánh nào: phân biệt **hỏi lại** với **từ chối**. Hai chuyện khác nhau với người
     # dùng — "tôi không biết bạn hỏi thủ tục nào" khác "dữ liệu của tôi không có thứ đó".
-    if str(state.get("branch_signal") or "") == BranchSignal.EMPTY.value:
-        return TU_CHOI
     return HOI_LAI
 
 

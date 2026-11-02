@@ -1,3 +1,4 @@
+import type { ProcedureDocument } from "../data/chatTypes";
 /** Citation luôn lấy từ metadata thật; LLM không tự tạo URL. */
 export interface Citation {
   title: string;
@@ -14,8 +15,15 @@ export interface ProcedureSummary {
   agency?: string;
 }
 
+export interface ChatHistoryTurn {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface ChatRequest {
   question: string;
+  session_id?: string;
+  history?: ChatHistoryTurn[];
 }
 
 /** Một lựa chọn cho câu hỏi lại — giao diện vẽ thành nút bấm. */
@@ -29,10 +37,13 @@ export interface ChatResponse {
   answer: string;
   citations: Citation[];
   procedure?: ProcedureSummary;
+  documents?: ProcedureDocument[];
   /** `clarify` = cần người dùng chọn; `abstained` = từ chối; `answered` = có câu trả lời. */
   status?: "answered" | "clarify" | "abstained";
   /** Chỉ có khi `status === "clarify"` và hệ thống biết lựa chọn cụ thể. */
   options?: ClarifyOption[];
   /** true khi hệ thống không đủ evidence và phải từ chối trả lời. */
   abstained: boolean;
+  /** FAQ gợi ý tiếp theo, tối đa 3. */
+  suggestions?: { id: string; question: string }[];
 }

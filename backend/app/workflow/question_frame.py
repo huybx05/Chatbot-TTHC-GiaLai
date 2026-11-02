@@ -7,9 +7,17 @@ It defines only the JSON-compatible shape that later workflow phases will consum
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import TypedDict
+from typing import NotRequired, TypedDict
 
 QUESTION_FRAME_SCHEMA_VERSION = "1.0"
+
+
+class SocialIntent(StrEnum):
+    GREETING = "greeting"
+    THANKS = "thanks"
+    GOODBYE = "goodbye"
+    ACKNOWLEDGEMENT = "acknowledgement"
+    OTHER = "other"
 
 
 class QuestionScope(StrEnum):
@@ -22,6 +30,7 @@ class QuestionScope(StrEnum):
 class SubjectType(StrEnum):
     PROCEDURE = "procedure"
     DOCUMENT = "document"
+    DECISION = "decision"
     AGENCY = "agency"
     FIELD = "field"
     ADMINISTRATIVE_LEVEL = "administrative_level"
@@ -44,9 +53,12 @@ class Facet(StrEnum):
     REQUIRED_DOCUMENTS = "required_documents"
     STEPS = "steps"
     SUBMISSION_METHOD = "submission_method"
+    RECEIVING_AGENCY = "receiving_agency"
     PROCESSING_TIME = "processing_time"
     FEE = "fee"
     RESULT = "result"
+    RESULT_DELIVERY = "result_delivery"
+    DECISION_NUMBER = "decision_number"
     LEGAL_BASIS = "legal_basis"
     REQUIREMENTS = "requirements"
     GENERAL_INFO = "general_info"
@@ -116,3 +128,7 @@ class QuestionFrame(TypedDict):
     subject_mentions: list[SubjectMention]
     requests: list[QuestionRequest]
     ambiguity: AmbiguityInfo
+    #: Chỉ có khi ``scope = smalltalk``; parser phân loại câu xã giao.
+    social_intent: NotRequired[SocialIntent]
+    #: Tên người dùng tự giới thiệu; chỉ dùng để xưng hô trong phiên.
+    preferred_name: NotRequired[str]

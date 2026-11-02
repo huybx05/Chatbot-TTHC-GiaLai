@@ -23,8 +23,9 @@ phụ thuộc vào **hợp đồng dữ liệu**, không phụ thuộc vào nhau
    khẳng định điều này (``test_state_ghi_duoc_ra_json``).
 2. **Mặc định đầy đủ.** :func:`new_state` cho ra trạng thái dùng được ngay, nên không bước nào
    phải tự kiểm tra "trường này có tồn tại chưa".
-3. **Không có bộ nhớ hội thoại.** Theo quyết định của dự án: mỗi câu hỏi độc lập. Không có
-   trường lịch sử các lượt trước, không có bộ lưu trạng thái giữa các lượt.
+3. **Memory hội thoại là dữ liệu đầu vào.** State chỉ giữ bản rút gọn
+   (summary, recent turns, topic ledger) do Memory Reader dựng; không tự
+   đọc/ghi database và không dùng memory làm evidence.
 
 ## Điều KHÔNG đặt ở đây
 
@@ -171,9 +172,12 @@ NEED_HOP_LE: tuple[str, ...] = (
     "required_documents",
     "steps",
     "submission_method",
+    "receiving_agency",
     "processing_time",
     "fee",
     "result",
+    "result_delivery",
+    "decision_number",
     "legal_basis",
     "requirements",
     "general_info",
@@ -233,6 +237,16 @@ class AgentState(TypedDict, total=False):
 
     # ── câu hỏi ──────────────────────────────────────────────────────────
     question: str
+    #: Câu người dùng đã nhập; dùng cho bước sinh câu trả lời cuối.
+    original_question: str
+    #: Câu đã rewrite/tối ưu; dùng cho parser, grounding, retrieval.
+    retrieval_question: str
+    #: Anchor thủ tục do rewrite trả về; rỗng nếu không có.
+    memory_anchor: dict
+    #: Metadata rewrite (used/confidence/reason/anchor) để ghi log.
+    rewrite: dict
+    #: Bản rút gọn của memory phiên; rỗng nếu không có/không bật.
+    memory: dict
     #: Nội dung đã bỏ dấu, viết thường — dùng cho so khớp từ khoá.
     normalized_question: str
     turn_index: int
@@ -252,6 +266,12 @@ class AgentState(TypedDict, total=False):
     #: lại, không được định danh bừa.
     needs_antecedent: bool
     resolution: ResolutionInfo
+    #: Giả thuyết procedure do resolver/grounding sinh; **không** phải fact.
+    candidate_procedures: list[dict]
+    #: Procedure đã được grounding (hoặc mã trực tiếp) xác nhận.
+    grounded_procedure: dict
+    #: Procedure thực sự được dùng để trả lời, chỉ có khi answered + evidence.
+    answered_procedure: dict
 
     # ── phân tích ý (do semantic parser trả) ─────────────────────────────
     #: Câu hỏi tách thành các ý, mỗi ý kèm khía cạnh cần truy xuất. Rỗng = câu một ý.
@@ -264,9 +284,7 @@ class AgentState(TypedDict, total=False):
     plan: dict
     #: Độ phủ theo từng request do executor tính: ``covered``/``empty``/``failed``/``unsupported``.
     coverage: list[dict]
-    #: Ứng viên (giả thuyết) do grounding/resolver sinh — **không phải** bằng chứng.
-    discovery: list[dict]
-    #: Nhãn nguồn lực cho cả lượt: direct/composed/discovery/unsupported/clarify/out_of_scope.
+    #: Nhãn nguồn lực cho cả lượt: direct/composed/unsupported/clarify/out_of_scope.
     plan_class: str
     #: Vì sao chọn nhãn đó (để đọc trace, không hiện cho người dân).
     plan_class_reason: str
@@ -338,6 +356,11 @@ def new_state(question: str, *, turn_index: int = 1) -> AgentState:
     """
     return AgentState(
         question=question,
+        original_question=question,
+        retrieval_question=question,
+        memory_anchor={},
+        rewrite={},
+        memory={},
         normalized_question="",
         turn_index=turn_index,
         codes=[],
@@ -349,7 +372,6 @@ def new_state(question: str, *, turn_index: int = 1) -> AgentState:
         groundings=[],
         plan={},
         coverage=[],
-        discovery=[],
         plan_class="",
         plan_class_reason="",
         request_plan_class=[],
@@ -377,6 +399,9 @@ def new_state(question: str, *, turn_index: int = 1) -> AgentState:
             alternatives=[],
             note="",
         ),
+        candidate_procedures=[],
+        grounded_procedure={},
+        answered_procedure={},
         vector_hash="",
         evidence=[],
         branch="",

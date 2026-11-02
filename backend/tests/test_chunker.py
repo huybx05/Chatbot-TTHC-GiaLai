@@ -46,6 +46,7 @@ def sample_record() -> dict:
         "trinh_tu_thuc_hien": "Bước 1\nNộp hồ sơ tại bộ phận một cửa.",
         "cach_thuc_thuc_hien": "Trực tuyến\t3 Ngày làm việc\tMiễn phí\tNộp qua cổng",
         "thanh_phan_ho_so": "Tên giấy tờ\tSố lượng\nTờ khai\t1 bản chính",
+        "execution_cases": [],
         "can_cu_phap_ly": "Luật Hộ tịch\t60/2014/QH13",
         "co_quan_thuc_hien": "Ủy ban nhân dân cấp xã",
         "yeu_cau_dieu_kien": "Không quy định",
@@ -77,6 +78,49 @@ def sample_record() -> dict:
         "content_hash": "abc123",
         "ngay_crawl": "2026-10-02T00:00:00+00:00",
     }
+
+
+def test_execution_cases_tao_chunk_theo_case() -> None:
+    record = sample_record()
+    record["execution_cases"] = [
+        {
+            "case_order": 1,
+            "case_code": "",
+            "case_name": "(1.1) Công trình theo tuyến",
+            "components": [
+                {
+                    "component_index": 1,
+                    "name": "Đơn đề nghị",
+                    "original_qty": 1,
+                    "copy_qty": 0,
+                    "source_path": "executionCases[0].profileComponents[0]",
+                }
+            ],
+            "source_path": "executionCases[0]",
+        },
+        {
+            "case_order": 2,
+            "case_code": "",
+            "case_name": "(1.2) Công trình tôn giáo",
+            "components": [
+                {
+                    "component_index": 1,
+                    "name": "Đơn đề nghị",
+                    "original_qty": 1,
+                    "copy_qty": 0,
+                    "source_path": "executionCases[1].profileComponents[0]",
+                }
+            ],
+            "source_path": "executionCases[1]",
+        },
+    ]
+
+    chunks = chunk_record(record)
+    sections = [c for c in chunks if c["section_type"] == "REQUIRED_DOCUMENTS"]
+
+    assert len(sections) == 2
+    assert [c["metadata"]["case_order"] for c in sections] == [1, 2]
+    assert len({c["chunk_id"] for c in sections}) == 2
 
 
 def _read_real(ma: str) -> dict:

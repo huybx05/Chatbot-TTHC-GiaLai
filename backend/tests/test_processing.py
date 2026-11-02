@@ -29,7 +29,7 @@ from data_pipeline.processing.validator import (
 
 
 def sample_record() -> dict:
-    """Bản ghi 29 trường hợp lệ, dùng làm gốc cho các test."""
+    """Bản ghi 30 trường hợp lệ, dùng làm gốc cho các test."""
     return {
         "ma_thu_tuc": "1.000001",
         "detail_url": "https://dichvucong.gov.vn/thu-tuc-hanh-chinh/abc",
@@ -48,6 +48,7 @@ def sample_record() -> dict:
         "trinh_tu_thuc_hien": "* Bước 1\nNộp hồ sơ",
         "cach_thuc_thuc_hien": "Hình thức nộp\tThời gian\nTrực tuyến\t5 Ngày làm việc",
         "thanh_phan_ho_so": "Tên giấy tờ\tSố lượng\nTờ khai\t1 bản chính",
+        "execution_cases": [],
         "can_cu_phap_ly": "Tên văn bản pháp lý\tMã văn bản\nLuật Hộ tịch\t60/2014/QH13",
         "co_quan_thuc_hien": "Ủy ban nhân dân cấp xã",
         "yeu_cau_dieu_kien": "Không quy định",
@@ -164,8 +165,8 @@ def test_fields_needing_normalization_reports_only_bad_field() -> None:
     # ───────────────────────── KIỂM ĐỊNH ─────────────────────────
 
 
-def test_schema_co_29_truong() -> None:
-    assert len(FIELD_SCHEMA) == 29
+def test_schema_co_30_truong() -> None:
+    assert len(FIELD_SCHEMA) == 30
 
 
 def test_record_mau_dat() -> None:

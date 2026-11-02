@@ -40,11 +40,13 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import Cookie, Depends, Header, HTTPException, status
+from sqlalchemy import text
 
-from backend.app.auth.security import decode_access_token
+from backend.app.auth.security import decode_access_token, find_active_session
+from backend.app.db.postgres import engine
 
-#: Thứ tự quyền từ thấp tới cao. Dùng để so "có đủ quyền không".
-ROLE_ORDER = {"viewer": 0, "analyst": 1, "admin": 2}
+#: Hai role duy nhất của ứng dụng.
+ROLE_ORDER = {"client": 0, "admin": 1}
 
 
 def _trich_token(
@@ -59,37 +61,101 @@ def _trich_token(
     return access_token or None
 
 
-def get_current_user(token: Annotated[str | None, Depends(_trich_token)]) -> dict[str, Any]:
-    """Giải mã token và trả thông tin người dùng. Ném 401 nếu không hợp lệ.
+def _user_from_session(session_token: str) -> dict[str, Any] | None:
+    """Tra phiên opaque trong cookie và trả user còn hiệu lực."""
+    with engine.connect() as conn:
+        session = find_active_session(conn, session_token)
+        if session is None:
+            return None
 
-    Trả **dữ liệu từ token**, không truy vấn CSDL. Đó là điểm mạnh của JWT: mọi request
-    tới `/admin` không phải chạm PostgreSQL.
+        row = conn.execute(
+            text(
+                "SELECT id, username, role, is_active "
+                "FROM users WHERE id = :id"
+            ),
+            {"id": session.user_id},
+        ).mappings().first()
 
-    Đổi lại: nếu admin bị hạ quyền hoặc vô hiệu hoá, access token cũ **vẫn còn hiệu lực**
-    tới khi hết hạn (tối đa 30 phút). Chấp nhận được vì: (a) cửa sổ ngắn, (b) thao tác hạ
-    quyền đi kèm `revoke_all_sessions`, nên refresh token chết ngay và không gia hạn được.
-    Nếu cần chặn tức thì thì phải kiểm `is_active` trong CSDL mỗi request — đánh đổi
-    hiệu năng lấy tính tức thời.
+        if row is None or not row["is_active"]:
+            conn.execute(
+                text(
+                    "UPDATE sessions SET revoked_at = NOW() "
+                    "WHERE id = :id AND revoked_at IS NULL"
+                ),
+                {"id": session.id},
+            )
+            conn.commit()
+            return None
+
+        return {
+            "id": int(row["id"]),
+            "username": str(row["username"]),
+            "role": str(row["role"]),
+            "jti": "",
+        }
+
+
+def get_current_user(
+    session_cookie: Annotated[
+        str | None,
+        Cookie(alias="session_id"),
+    ] = None,
+    token: Annotated[str | None, Depends(_trich_token)] = None,
+) -> dict[str, Any]:
+    """Lấy user từ session cookie; fallback JWT cho client API cũ.
+
+    Browser dùng cookie ``session_id`` (opaque, HttpOnly). API client dùng
+    ``Authorization: Bearer`` như trước, nên các tích hợp cũ không bị phá.
     """
     credential_error = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Chưa đăng nhập hoặc token không hợp lệ.",
+        detail="Chưa đăng nhập hoặc phiên không hợp lệ.",
         # Client biết cần gửi kèm loại xác thực nào.
         headers={"WWW-Authenticate": "Bearer"},
     )
-    if not token:
-        raise credential_error
 
-    payload = decode_access_token(token)
-    if payload is None:
-        raise credential_error
+    if token:
+        payload = decode_access_token(token)
+        if payload is not None:
+            return {
+                "id": int(payload["sub"]),
+                "username": str(payload.get("username") or ""),
+                "role": str(payload.get("role") or "client"),
+                "jti": str(payload.get("jti") or ""),
+            }
 
-    return {
-        "id": int(payload["sub"]),
-        "username": str(payload.get("username") or ""),
-        "role": str(payload.get("role") or "viewer"),
-        "jti": str(payload.get("jti") or ""),
-    }
+    if session_cookie:
+        user = _user_from_session(session_cookie)
+        if user is not None:
+            return user
+
+    raise credential_error
+
+
+def get_optional_user(
+    session_cookie: Annotated[
+        str | None,
+        Cookie(alias="session_id"),
+    ] = None,
+    token: Annotated[str | None, Depends(_trich_token)] = None,
+) -> dict[str, Any] | None:
+    """Như ``get_current_user`` nhưng trả ``None`` khi request là khách.
+
+    Dùng cho endpoint công khai cần biết user nếu đã đăng nhập, nhưng vẫn
+    phải chạy được khi chưa đăng nhập.
+    """
+    if not session_cookie and not token:
+        return None
+
+    try:
+        return get_current_user(
+            session_cookie=session_cookie,
+            token=token,
+        )
+    except HTTPException as exc:
+        if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+            return None
+        raise
 
 
 def require_admin(
@@ -108,19 +174,7 @@ def require_admin(
     return user
 
 
-def require_analyst(
-    user: Annotated[dict[str, Any], Depends(get_current_user)],
-) -> dict[str, Any]:
-    """Cho `analyst` và `admin` đi tiếp. `viewer` bị chặn."""
-    if ROLE_ORDER.get(user["role"], -1) < ROLE_ORDER["analyst"]:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Thao tác này cần quyền analyst trở lên (bạn đang là {user['role']!r}).",
-        )
-    return user
-
-
 #: Kiểu tiện dụng để khai báo trong endpoint.
 CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
+OptionalUser = Annotated[dict[str, Any] | None, Depends(get_optional_user)]
 AdminUser = Annotated[dict[str, Any], Depends(require_admin)]
-AnalystUser = Annotated[dict[str, Any], Depends(require_analyst)]

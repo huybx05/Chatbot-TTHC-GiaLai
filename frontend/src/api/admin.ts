@@ -29,24 +29,29 @@ export type AdminSection = {
   detail_url: string;
 };
 
-export type AdminQaPair = {
+export type AdminFaq = {
   id: string;
-  faq_id?: string;
+  procedure_code?: string | null;
   question: string;
   answer: string;
-  procedure_code: string;
-  procedure_name?: string;
-  domain_group?: string;
-  source_field?: string;
-  intent?: string;
-  source_section?: string;
-  source_text?: string;
-  tags?: string[];
+  intent: string;
   status: string;
-  score: number;
-  confidence?: number;
+  priority: number;
   created_at?: string;
   updated_at?: string;
+};
+
+export type AdminFaqIntent = {
+  value: string;
+  label: string;
+};
+
+export type AdminFaqPayload = {
+  question: string;
+  answer: string;
+  intent: string;
+  status: "ready" | "draft";
+  procedure_code?: string | null;
 };
 
 export type GraphNode = {
@@ -67,6 +72,53 @@ export type GraphStats = {
   relationships: { type: string; count: number }[];
 };
 
+export type AdminConversation = {
+  id: string;
+  session_id: string;
+  session_title: string;
+  user_name: string;
+  user_type: "auth" | "guest";
+  question: string;
+  answer: string;
+  created_at: string;
+  status: string;
+  source: string;
+  social_intent: string;
+  ttft_ms: number | null;
+  total_ms: number | null;
+  streamed: boolean;
+  feedback: {
+    value?: "like" | "dislike";
+    reasons?: string[];
+    comment?: string;
+    updated_at?: string;
+  } | null;
+};
+
+export function getAdminConversations() {
+  return request<{ items: AdminConversation[] }>("/api/admin/conversations");
+}
+
+export type AdminConversationDetail = AdminConversation & {
+  messages: {
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    metadata: Record<string, unknown>;
+    created_at: string;
+  }[];
+};
+
+export function getAdminConversation(messageId: string) {
+  return request<AdminConversationDetail>(`/api/admin/conversations/${messageId}`);
+}
+
+export function deleteAdminConversation(messageId: string) {
+  return request<{ deleted: number }>(`/api/admin/conversations/${messageId}`, {
+    method: "DELETE",
+  });
+}
+
 export type ServiceStatus = {
   ready: boolean;
   error: string;
@@ -79,6 +131,63 @@ export type ServiceStatus = {
     faq?: { name: string; exists: boolean; points: number };
   };
 };
+
+export type AdminCostSummary = {
+  budget_usd: number;
+  spent_usd: number;
+  remaining_usd: number;
+  percent: number;
+  status: "normal" | "notice" | "warning" | "over";
+  month_start: string;
+  month_end: string;
+  today_usd: number;
+  today_calls: number;
+  month_calls: number;
+  tokens: { input: number; cached: number; output: number };
+  by_model: Array<{
+    model: string;
+    calls: number;
+    input_tokens: number;
+    output_tokens: number;
+    embedding_tokens: number;
+    rerank_tokens: number;
+    cost_usd: number;
+  }>;
+  by_stage: Array<{ stage: string; calls: number; cost_usd: number }>;
+  recent: Array<{
+    occurred_at: string;
+    stage: string;
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    cost_usd: number;
+    is_peak: boolean;
+    input_tier: string;
+  }>;
+  pricing: Array<{
+    model_key: string;
+    display_name: string;
+    provider: string;
+    kind: string;
+    input_cache_hit_per_m: number | null;
+    input_cache_miss_per_m: number | null;
+    output_per_m: number | null;
+    embedding_per_m: number | null;
+    rerank_per_m: number | null;
+    peak_multiplier: number;
+    peak_timezone: string;
+    peak_windows: Array<{ start: string; end: string }>;
+    input_tiers: Array<{
+      max_input_tokens: number | null;
+      input_per_m: number;
+      output_per_m: number;
+    }>;
+  }>;
+};
+
+export function getAdminCostSummary() {
+  return request<AdminCostSummary>("/api/admin/costs/summary");
+}
 
 export type AdminSystemStatus = {
   services: Record<"api" | "postgresql" | "neo4j" | "elasticsearch" | "qdrant", ServiceStatus>;
@@ -100,16 +209,34 @@ export function getAdminSections(code: string) {
   return request<{ items: AdminSection[] }>(`/api/admin/procedures/${code}/sections`);
 }
 
-export function getAdminQa(procedureCode: string) {
-  return request<{ items: AdminQaPair[] }>(`/api/admin/qa?procedure_code=${encodeURIComponent(procedureCode)}`);
+export function getAdminFaqs(q = "", intent = "") {
+  return request<{ items: AdminFaq[] }>(
+    `/api/admin/faq?q=${encodeURIComponent(q)}&intent=${encodeURIComponent(intent)}`,
+  );
 }
 
-export function approveAdminQa(id: string) {
-  return request<{ updated: number }>(`/api/admin/qa/${id}/approve`, { method: "POST" });
+export function getAdminFaqIntents() {
+  return request<AdminFaqIntent[]>("/api/admin/faq/intents");
 }
 
-export function approveAllAdminQa(procedureCode = "") {
-  return request<{ updated: number }>(`/api/admin/qa/approve-all?procedure_code=${encodeURIComponent(procedureCode)}`, { method: "POST" });
+export function createAdminFaq(payload: AdminFaqPayload) {
+  return request<AdminFaq>("/api/admin/faq", {
+    method: "POST",
+    body: payload,
+  });
+}
+
+export function updateAdminFaq(id: string, payload: AdminFaqPayload) {
+  return request<AdminFaq>(`/api/admin/faq/${id}`, {
+    method: "PATCH",
+    body: payload,
+  });
+}
+
+export function deleteAdminFaq(id: string) {
+  return request<{ deleted: number }>(`/api/admin/faq/${id}`, {
+    method: "DELETE",
+  });
 }
 
 export function getGraphStats() {
@@ -134,7 +261,6 @@ export function getProcedureGraph(code: string) {
  * ------------------------------------------------------------------------- */
 
 export type RetrievalMode =
-  | "faq"
   | "keyword"
   | "vector"
   | "hybrid"

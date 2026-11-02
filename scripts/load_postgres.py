@@ -199,6 +199,7 @@ def chuan_bi_sections(chunks: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "content": chunk["text"],
                 "chunk_order": chunk["chunk_order"],
                 "detail_url": chunk.get("detail_url") or None,
+                "metadata": json.dumps(chunk.get("metadata") or {}, ensure_ascii=False),
             }
         )
     return rows
@@ -251,16 +252,18 @@ SQL_AGENCIES = text(
 SQL_SECTIONS = text(
     """
     INSERT INTO procedure_sections (
-        section_id, procedure_code, section_type, title, content, chunk_order, detail_url
+        section_id, procedure_code, section_type, title, content, chunk_order, detail_url, metadata
     ) VALUES (
-        :section_id, :procedure_code, :section_type, :title, :content, :chunk_order, :detail_url
+        :section_id, :procedure_code, :section_type, :title, :content, :chunk_order, :detail_url,
+        CAST(:metadata AS jsonb)
     )
     ON CONFLICT (section_id) DO UPDATE SET
         section_type = EXCLUDED.section_type,
         title        = EXCLUDED.title,
         content      = EXCLUDED.content,
         chunk_order  = EXCLUDED.chunk_order,
-        detail_url   = EXCLUDED.detail_url
+        detail_url   = EXCLUDED.detail_url,
+        metadata     = EXCLUDED.metadata
     """
 )
 

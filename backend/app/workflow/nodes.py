@@ -277,8 +277,13 @@ async def node_hybrid(state: AgentState) -> dict[str, Any]:
     use_gate = not verified and len(parts) <= 1
 
     try:
+        # BM25 và vector dùng **cùng** câu đã rewrite. Nếu rewrite không được
+        # dùng, câu này chính là câu gốc.
         ket_qua = await hybrid.hybrid(
-            cau, vector=vector, codes=codes, use_gate=use_gate
+            cau,
+            vector=vector,
+            codes=codes,
+            use_gate=use_gate,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Bước tìm kiếm lai lỗi: %s", exc)

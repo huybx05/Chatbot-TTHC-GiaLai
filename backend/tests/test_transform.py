@@ -43,6 +43,7 @@ REQUIRED_FIELDS = {
     "trinh_tu_thuc_hien",
     "cach_thuc_thuc_hien",
     "thanh_phan_ho_so",
+    "execution_cases",
     "can_cu_phap_ly",
     "co_quan_thuc_hien",
     "yeu_cau_dieu_kien",
@@ -331,7 +332,7 @@ def test_validate_trang_thai_ngung_hieu_luc_bi_need_review() -> None:
 RAW_MAU = Path("data/raw/api/01. AN_NINH_TRAT_TU_CU_TRU/Dang_ky_quan_ly_cu_tru/1.013314.json")
 
 
-def test_transform_returns_exactly_29_fields() -> None:
+def test_transform_returns_exactly_30_fields() -> None:
     """Chốt hợp đồng dữ liệu: thêm/bớt trường là test này phải đổ.
 
     Bộ trường là cam kết với tầng sau (chunking, indexing), nên không được lệch âm thầm.
@@ -342,7 +343,7 @@ def test_transform_returns_exactly_29_fields() -> None:
     raw = json.loads(RAW_MAU.read_text(encoding="utf-8"))
     result = transform(ENTRY, raw, crawled_at="2026-01-01T00:00:00+00:00")
 
-    assert len(result) == 29, f"Số trường lệch: {len(result)}"
+    assert len(result) == 30, f"Số trường lệch: {len(result)}"
     assert set(result) == REQUIRED_FIELDS
     assert "raw_text" not in result
 
@@ -357,7 +358,7 @@ def test_transform_truong_text_khong_tra_ve_none() -> None:
 
     for ten, sample in result.items():
         assert sample is not None, f"trường {ten} trả về None"
-        if ten not in ("phi", "thoi_han"):
+        if ten not in ("phi", "thoi_han", "execution_cases"):
             assert isinstance(sample, str), f"trường {ten} không phải chuỗi"
 
 

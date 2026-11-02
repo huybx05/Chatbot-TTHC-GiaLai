@@ -5,11 +5,12 @@ interface ContextMenuProps {
   anchor: HTMLElement;
   pinned: boolean;
   onTogglePin: () => void;
+  onRename: () => void;
   onDelete: () => void;
   onClose: () => void;
 }
 
-const MENU_WIDTH = 160;
+const MENU_WIDTH = 176;
 const MENU_GAP = 4;
 
 /** Menu ba chấm của một cuộc trò chuyện: Ghim/Bỏ ghim và Xóa. */
@@ -17,6 +18,7 @@ export default function ContextMenu({
   anchor,
   pinned,
   onTogglePin,
+  onRename,
   onDelete,
   onClose,
 }: ContextMenuProps) {
@@ -67,13 +69,23 @@ export default function ContextMenu({
     >
       <button
         type="button"
-        onClick={onTogglePin}
+        onClick={() => onTogglePin()}
         className="group flex w-full items-center gap-2.5 px-3 py-2 text-left text-text-primary transition-colors hover:bg-secondary-surface"
       >
         <span className="material-symbols-outlined text-[17px] text-text-secondary group-hover:text-primary">
           push_pin
         </span>
         <span className="text-[13.5px] font-medium">{pinned ? "Bỏ ghim" : "Ghim"}</span>
+      </button>
+      <button
+        type="button"
+        onClick={onRename}
+        className="group flex w-full items-center gap-2.5 px-3 py-2 text-left text-text-primary transition-colors hover:bg-secondary-surface"
+      >
+        <span className="material-symbols-outlined text-[17px] text-text-secondary group-hover:text-primary">
+          edit
+        </span>
+        <span className="text-[13.5px] font-medium">Đổi tên</span>
       </button>
       <button
         type="button"

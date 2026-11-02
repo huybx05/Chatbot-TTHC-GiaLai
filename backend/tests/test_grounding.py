@@ -62,6 +62,35 @@ def _frame(mentions, requests=None) -> QuestionFrame:
 # ── procedure mentions ─────────────────────────────────────────────────────
 
 
+def test_code_without_dot_uses_fact_lookup(monkeypatch) -> None:
+    async def fake_lookup(_text):
+        return grounding.fact_lookup.CodeLookup(
+            asked=("1013225",),
+            matched=("1.013225",),
+        )
+
+    async def fake_names():
+        return {"1.013225": "Thủ tục thử nghiệm"}
+
+    def reject(*_a, **_k):
+        raise AssertionError("mã đã khớp chính xác thì không được tìm bằng vector")
+
+    monkeypatch.setattr(grounding.fact_lookup, "resolve_codes", fake_lookup)
+    monkeypatch.setattr(resolver, "procedure_names", fake_names)
+    monkeypatch.setattr(resolver, "resolve_procedure", reject)
+
+    items = asyncio.run(
+        ground_frame(
+            _frame([("procedure", "mã 1 013225")]),
+            _resolution(),
+        )
+    )
+
+    assert items[0].status == "resolved"
+    assert items[0].code == "1.013225"
+    assert items[0].method == "code"
+
+
 def test_verified_code_is_resolved_without_calling_resolver(monkeypatch) -> None:
     def reject(*_a, **_k):
         raise AssertionError("có mã đã xác minh thì không được gọi resolver")
@@ -98,6 +127,97 @@ def test_demonstrative_without_antecedent_needs_context() -> None:
         ground_frame(_frame([("procedure", "thủ tục này")]), _resolution())
     )
     assert items[0].status == "context_required"
+
+
+def test_grounding_dung_mention_thay_vi_cau_rewrite(monkeypatch) -> None:
+    targets: list[str] = []
+
+    async def fake(text, *, codes=None, get_vector=None):
+        targets.append(text)
+        return resolver.ProcedureResolution(
+            code="1.013229",
+            name="Cấp giấy phép xây dựng sửa chữa, cải tạo",
+            method="vector",
+            confidence=0.9,
+        )
+
+    monkeypatch.setattr(resolver, "resolve_procedure", fake)
+    items = asyncio.run(
+        ground_frame(
+            _frame([("procedure", "xin phép sửa chữa, cải tạo lại cái nhà đó")]),
+            _resolution(question="thời gian cấp giấy phép xây dựng mới"),
+        )
+    )
+
+    assert targets == ["xin phép sửa chữa, cải tạo lại cái nhà đó"]
+    assert items[0].code == "1.013229"
+
+
+def test_grounding_rerank_alternative_khop_cum_nguoi_dung(monkeypatch) -> None:
+    async def fake(_text, *, codes=None, get_vector=None):
+        return resolver.ProcedureResolution(
+            code="1.013225",
+            name="Cấp giấy phép xây dựng mới",
+            method="vector",
+            confidence=0.93,
+            candidates=[
+                ("1.013225", "Cấp giấy phép xây dựng mới", 0.93),
+                (
+                    "1.013229",
+                    "Cấp giấy phép xây dựng sửa chữa, cải tạo",
+                    0.89,
+                ),
+            ],
+        )
+
+    monkeypatch.setattr(resolver, "resolve_procedure", fake)
+    items = asyncio.run(
+        ground_frame(
+            _frame([("procedure", "xin phép sửa chữa, cải tạo lại cái nhà đó")]),
+            _resolution(),
+        )
+    )
+
+    assert items[0].code == "1.013229"
+    assert items[0].status == "resolved"
+
+
+def test_grounding_hai_mention_resolve_doc_lap(monkeypatch) -> None:
+    async def fake(text, *, codes=None, get_vector=None):
+        if "dược" in text:
+            return resolver.ProcedureResolution(
+                code="1.014100",
+                name="Cấp lại Chứng chỉ hành nghề dược",
+                method="exact_name",
+                confidence=1.0,
+            )
+        return resolver.ProcedureResolution(
+            code="1.013229",
+            name="Cấp giấy phép xây dựng sửa chữa, cải tạo",
+            method="exact_name",
+            confidence=1.0,
+        )
+
+    monkeypatch.setattr(resolver, "resolve_procedure", fake)
+    frame = _frame(
+        [
+            ("procedure", "Cấp lại Chứng chỉ hành nghề dược"),
+            ("procedure", "Sửa chữa, cải tạo nhà ở riêng lẻ"),
+        ],
+        requests=[
+            {
+                "text": "so sánh",
+                "facet": Facet.PROCESSING_TIME,
+                "operation": RequestOperation.COMPARE,
+                "subject_ref": 1,
+                "constraints": [],
+            }
+        ],
+    )
+    items = asyncio.run(ground_frame(frame, _resolution()))
+
+    assert [item.code for item in items] == ["1.014100", "1.013229"]
+    assert all(item.status == "resolved" for item in items)
 
 
 def test_resolver_resolved(monkeypatch) -> None:
@@ -145,6 +265,10 @@ def test_resolver_ambiguous_keeps_alternatives(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(resolver, "resolve_procedure", fake)
+    async def no_rerank(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(grounding.reranker, "rerank_procedure_names", no_rerank)
     items = asyncio.run(
         ground_frame(_frame([("procedure", "đổi sổ đỏ bị rách")]), _resolution())
     )

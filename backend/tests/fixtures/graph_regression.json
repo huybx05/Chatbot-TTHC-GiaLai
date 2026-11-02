@@ -1,0 +1,62 @@
+[
+  {
+    "question": "Thủ tục 1.004873 do cơ quan nào ban hành?",
+    "expected_intent": "AGENCY",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Thủ tục 1.001699 do cơ quan nào thực hiện?",
+    "expected_intent": "AGENCY",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Căn cứ pháp lý của thủ tục 1.004873 là gì?",
+    "expected_intent": "LEGAL_BASIS_OF_PROCEDURE",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Quyết định QĐ/0001-BTP áp dụng cho những thủ tục nào?",
+    "expected_intent": "PROCEDURES_BY_DECISION",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Quyết định 970/QĐ-BYT áp dụng cho thủ tục nào?",
+    "expected_intent": "PROCEDURES_BY_DECISION",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Có những thủ tục nào thuộc lĩnh vực Hộ tịch?",
+    "expected_intent": "PROCEDURES_BY_FIELD",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Có những thủ tục nào do Bộ Y tế ban hành?",
+    "expected_intent": "PROCEDURES_BY_AGENCY",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Có những thủ tục nào thực hiện ở cấp xã?",
+    "expected_intent": "PROCEDURES_BY_LEVEL",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Thủ tục 1.004873 trả kết quả gì?",
+    "expected_intent": "RESULT",
+    "expected_source": "graph",
+    "require_citation": true
+  },
+  {
+    "question": "Thủ tục 1.004873 áp dụng cho đối tượng nào?",
+    "expected_intent": "AUDIENCE",
+    "expected_source": "graph",
+    "require_citation": true
+  }
+]

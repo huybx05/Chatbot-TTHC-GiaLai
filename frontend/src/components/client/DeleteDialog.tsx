@@ -5,7 +5,7 @@ interface DeleteDialogProps {
   /** Chuỗi mô tả, ví dụ "Tạo ngày 24/10/2024 • 2 tin nhắn". */
   meta: string;
   onCancel: () => void;
-  onConfirm: () => void;
+  onConfirm: () => Promise<void>;
 }
 
 /** Hộp thoại xác nhận xóa cuộc trò chuyện. Esc để đóng. */
@@ -16,6 +16,7 @@ export default function DeleteDialog({
   onConfirm,
 }: DeleteDialogProps) {
   const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -25,9 +26,15 @@ export default function DeleteDialog({
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [onCancel]);
 
-  const handleConfirm = () => {
+  const handleConfirm = async () => {
     setDeleting(true);
-    onConfirm();
+    setError("");
+    try {
+      await onConfirm();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Không thể xóa cuộc trò chuyện.");
+      setDeleting(false);
+    }
   };
 
   return (
@@ -64,11 +71,14 @@ export default function DeleteDialog({
           </div>
         </div>
 
+        {error ? <p className="text-[13px] text-danger">{error}</p> : null}
+
         <div className="flex items-center justify-end gap-3 pt-1">
           <button
             type="button"
             onClick={onCancel}
-            className="flex h-10 items-center justify-center rounded-[8px] border border-border-color bg-sidebar-bg px-[20px] py-[10px] text-[14px] font-medium text-text-primary shadow-sm transition-colors hover:bg-border-color"
+            disabled={deleting}
+            className="flex h-10 items-center justify-center rounded-[8px] border border-border-color bg-sidebar-bg px-[20px] py-[10px] text-[14px] font-medium text-text-primary shadow-sm transition-colors hover:bg-border-color disabled:cursor-not-allowed disabled:opacity-60"
           >
             Hủy
           </button>
@@ -76,7 +86,7 @@ export default function DeleteDialog({
             type="button"
             onClick={handleConfirm}
             disabled={deleting}
-            className="flex h-10 items-center justify-center gap-1.5 rounded-[8px] bg-danger px-[20px] py-[10px] text-[14px] font-medium text-white shadow-sm transition-colors hover:bg-danger-hover"
+            className="flex h-10 items-center justify-center gap-1.5 rounded-[8px] bg-danger px-[20px] py-[10px] text-[14px] font-medium text-white shadow-sm transition-colors hover:bg-danger-hover disabled:cursor-not-allowed disabled:opacity-60"
           >
             <span
               className={`material-symbols-outlined text-[17px] ${deleting ? "animate-spin" : ""}`}

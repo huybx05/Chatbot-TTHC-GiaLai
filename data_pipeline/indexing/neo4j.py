@@ -35,6 +35,12 @@ DEFAULT_DATABASE = os.getenv("NEO4J_DATABASE")
 NODE_PROCEDURE = "ThuTuc"
 NODE_AGENCY = "CoQuan"
 NODE_LEGAL_DOCUMENT = "VanBanPhapLy"
+NODE_DECISION = "QuyetDinh"
+
+#: Bốn TTHC liên thông không có UUID và dùng quan hệ thành phần riêng.
+INTERLINKED_CODES: frozenset[str] = frozenset(
+    {"3.000153", "2.002621", "2.002622", "1.014475"}
+)
 
 #: (tên trường JSON, nhãn đỉnh). Tên cạnh suy ra từ tên trường — viết HOA.
 FIELD_TO_NODE: tuple[tuple[str, str], ...] = (
@@ -112,6 +118,31 @@ AGENCY_FIELDS: tuple[tuple[str, str], ...] = (
     ("co_quan_phoi_hop", "PHOI_HOP"),
     ("co_quan_duoc_uy_quyen", "DUOC_UY_QUYEN"),
 )
+
+
+def agency_values(record: dict[str, Any], field: str) -> list[str]:
+    """Trả tên cơ quan sạch cho một trường quan hệ.
+
+    ``co_quan_co_tham_quyen`` thường rỗng trong dữ liệu nguồn, trong khi
+    ``co_quan_thuc_hien`` có tên cơ quan. Chỉ dùng trường sau làm fallback
+    cho ``CO_THAM_QUYEN`` khi trường chính không có giá trị thật.
+    """
+    raw = record.get(field)
+    values = raw if isinstance(raw, list) else ([raw] if raw else [])
+    cleaned = [str(item).strip() for item in values if str(item).strip()]
+
+    if field == "co_quan_co_tham_quyen" and (
+        not cleaned or all(is_sentinel(item) for item in cleaned)
+    ):
+        fallback = record.get("co_quan_thuc_hien")
+        values = (
+            fallback
+            if isinstance(fallback, list)
+            else ([fallback] if fallback else [])
+        )
+        cleaned = [str(item).strip() for item in values if str(item).strip()]
+
+    return [item for item in cleaned if not is_sentinel(item)]
 
 #: Mã văn bản pháp lý: 31/2024/QH15 · 49/2026/NĐ-CP · 104/2026/QĐ-UBND · 816/QĐ-UBND
 DOCUMENT_CODE_PATTERN = re.compile(
@@ -246,8 +277,36 @@ def split_related_procedures(value: Any) -> list[str]:
     text = str(value or "").strip()
     if not text:
         return []
-    parts = [part.strip() for part in text.split(", ")]
+    # Một số tên thủ tục liên thông chứa dấu phẩy trong tên thành phần; dùng
+    # dấu ";" làm ranh giới ưu tiên để không tách sai tên.
+    parts = [part.strip() for part in re.split(r";\s*", text)]
+    if len(parts) == 1:
+        parts = [part.strip() for part in text.split(", ")]
     return [part for part in parts if part]
+
+
+def split_decision_numbers(value: Any) -> list[tuple[str, str]]:
+    """Tách ``so_quyet_dinh`` thành ``[(key, số gốc)]``.
+
+    Một thủ tục có thể có nhiều số quyết định phân tách bởi dấu phẩy/chấm phẩy.
+    Không sinh node cho sentinel hoặc chuỗi rỗng.
+    """
+    if is_sentinel(value):
+        return []
+    text = str(value or "").strip()
+    if not text:
+        return []
+    rows: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for part in re.split(r"\s*[;,]\s*", text):
+        raw = part.strip()
+        if not raw or is_sentinel(raw):
+            continue
+        key = normalize_key(raw)
+        if key and key not in seen:
+            seen.add(key)
+            rows.append((key, raw))
+    return rows
 
 
 def read_records(src: Path) -> list[dict[str, Any]]:
@@ -389,6 +448,16 @@ SET e.is_inferred = false
 """
 
 
+CYPHER_DECISION = """
+UNWIND $rows AS r
+MERGE (t:{procedure} {{run_id: $run_id, key: r.thu_tuc}})
+MERGE (d:{decision} {{run_id: $run_id, key: r.key}})
+SET d.name = r.name, d.decision_number = r.decision_number
+MERGE (t)-[e:{rel_type}]->(d)
+SET e.is_inferred = false
+"""
+
+
 CYPHER_RELATED = """
 UNWIND $rows AS r
 MERGE (t:{procedure} {{run_id: $run_id, key: r.thu_tuc}})
@@ -463,7 +532,9 @@ def main(argv: list[str] | None = None) -> int:
     document_rows: list[dict] = []
     #: ``VanBanPhapLy -[:BAN_HANH_BOI]-> CoQuan``, suy từ hậu tố số hiệu.
     document_agency_rows: list[dict] = []
+    decision_rows: list[dict] = []
     related_rows: list[dict] = []
+    interlinked_rows: list[dict] = []
 
     for record in records:
         code = str(record.get("ma_thu_tuc") or "").strip()
@@ -490,14 +561,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         for field, rel_type in AGENCY_FIELDS:
-            raw = record.get(field)
-            items = raw if isinstance(raw, list) else ([raw] if raw else [])
-            for item in items:
-                value = str(item).strip()
-                if value:
-                    agency_rows[rel_type].append(
-                        {"thu_tuc": code, "key": normalize_key(value), "name": value}
-                    )
+            for value in agency_values(record, field):
+                agency_rows[rel_type].append(
+                    {"thu_tuc": code, "key": normalize_key(value), "name": value}
+                )
 
         for document_code, document_name in split_legal_documents(
             record.get("can_cu_phap_ly") or ""
@@ -515,9 +582,25 @@ def main(argv: list[str] | None = None) -> int:
                 )
 
         # Cạnh PHỤ: chỉ tên, không mã → đánh cờ is_inferred. Xem CYPHER_RELATED.
+        # Bốn TTHC liên thông dùng quan hệ THANH_PHAN_CUA, không trộn với
+        # THU_TUC_LIEN_QUAN của các thủ tục thường.
         for related_name in split_related_procedures(record.get("thu_tuc_lien_quan")):
-            related_rows.append(
-                {"thu_tuc": code, "key": normalize_key(related_name), "ten": related_name}
+            row = {"thu_tuc": code, "key": normalize_key(related_name), "ten": related_name}
+            if code in INTERLINKED_CODES:
+                interlinked_rows.append(row)
+            else:
+                related_rows.append(row)
+
+        for decision_key, decision_number in split_decision_numbers(
+            record.get("so_quyet_dinh")
+        ):
+            decision_rows.append(
+                {
+                    "thu_tuc": code,
+                    "key": decision_key,
+                    "decision_number": decision_number,
+                    "name": f"Quyết định số {decision_number}",
+                }
             )
 
     # ── Thống kê trước khi ghi ──────────────────────────────────────────
@@ -527,6 +610,7 @@ def main(argv: list[str] | None = None) -> int:
     for rel_type, rows in sorted(agency_rows.items()):
         print(f"      CoQuan/{rel_type:18} {len({x['key'] for x in rows}):5}")
     print(f"      {NODE_LEGAL_DOCUMENT:16} {len({x['key'] for x in document_rows}):5}")
+    print(f"      {NODE_DECISION:16} {len({x['key'] for x in decision_rows}):5}")
 
     # Cơ quan ban hành văn bản: chỉ in khi suy được, kèm tỉ lệ để biết độ phủ thật.
     doc_ma = {x["key"] for x in document_rows}
@@ -547,7 +631,9 @@ def main(argv: list[str] | None = None) -> int:
     for rel_type, rows in sorted(agency_rows.items()):
         print(f"      [:{rel_type:24}] {len(rows):5}")
     print(f"      [:{'CAN_CU_PHAP_LY':24}] {len(document_rows):5}")
+    print(f"      [:{'CO_QUYET_DINH':24}] {len(decision_rows):5}")
     print(f"      [:{'THU_TUC_LIEN_QUAN':24}] {len(related_rows):5}   (is_inferred = true)")
+    print(f"      [:{'THANH_PHAN_CUA':24}] {len(interlinked_rows):5}   (is_inferred = true)")
 
     procedures_per_document: dict[str, set] = defaultdict(set)
     for row in document_rows:
@@ -636,6 +722,21 @@ def main(argv: list[str] | None = None) -> int:
                     f"{len(document_rows):5} dòng"
                 )
 
+            if decision_rows:
+                session.run(
+                    CYPHER_DECISION.format(
+                        procedure=NODE_PROCEDURE,
+                        decision=NODE_DECISION,
+                        rel_type="CO_QUYET_DINH",
+                    ),
+                    rows=decision_rows,
+                    run_id=args.run_id,
+                ).consume()
+                print(
+                    f"  ✅ {NODE_DECISION + ' [:CO_QUYET_DINH]':26} "
+                    f"{len(decision_rows):5} dòng"
+                )
+
             if document_agency_rows:
                 session.run(
                     CYPHER_DOCUMENT_AGENCY.format(
@@ -664,11 +765,25 @@ def main(argv: list[str] | None = None) -> int:
                     f"({ten_moi} tên, is_inferred = true)"
                 )
 
+            if interlinked_rows:
+                session.run(
+                    CYPHER_RELATED.format(procedure=NODE_PROCEDURE, rel_type="THANH_PHAN_CUA"),
+                    rows=interlinked_rows,
+                    run_id=args.run_id,
+                ).consume()
+                ten_moi = len({r["key"] for r in interlinked_rows})
+                print(
+                    f"  ✅ {NODE_PROCEDURE + ' [:THANH_PHAN_CUA]':26} "
+                    f"{len(interlinked_rows):5} dòng "
+                    f"({ten_moi} tên, is_inferred = true)"
+                )
+
             # Chỉ mục để truy vấn nhanh. Tạo IF NOT EXISTS nên chạy lại vô hại.
             all_labels = (
                 NODE_PROCEDURE,
                 NODE_AGENCY,
                 NODE_LEGAL_DOCUMENT,
+                NODE_DECISION,
                 *(label for label, _ in FIELD_TO_NODE),
             )
             for label in all_labels:

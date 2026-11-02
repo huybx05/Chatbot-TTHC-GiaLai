@@ -40,6 +40,7 @@ import logging
 from openai import AsyncOpenAI
 
 from backend.app.config import settings
+from backend.app.cost.service import record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,15 @@ class _Embedder:
         result = await client.embeddings.create(
             model=settings.embedding_model_name,
             input=[text],
+        )
+        usage = getattr(result, "usage", None)
+        tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+        if not tokens:
+            tokens = int(getattr(usage, "total_tokens", 0) or 0)
+        await record_usage(
+            stage="embedding",
+            model=settings.embedding_model_name,
+            embedding_tokens=tokens,
         )
         return list(result.data[0].embedding)
 

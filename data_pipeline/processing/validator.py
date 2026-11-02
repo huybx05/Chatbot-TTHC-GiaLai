@@ -37,6 +37,7 @@ FIELD_SCHEMA: tuple[str, ...] = (
     "trinh_tu_thuc_hien",
     "cach_thuc_thuc_hien",
     "thanh_phan_ho_so",
+    "execution_cases",
     "can_cu_phap_ly",
     "co_quan_thuc_hien",
     "yeu_cau_dieu_kien",

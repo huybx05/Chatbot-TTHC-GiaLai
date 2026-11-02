@@ -1,6 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { login, logout, register, restoreSession, type AuthUser } from "../../api/auth";
 import { askChatStream, type StreamKetQua } from "../../api/chat";
+import { getFaqSuggestions } from "../../api/faq";
+import { ApiError } from "../../api/http";
+import { recordPageVisit } from "../../api/visits";
+import {
+  createChatSession,
+  createGuestSession,
+  deleteChatSession,
+  deleteGuestSession,
+  getChatMessages,
+  getChatSessions,
+  getGuestSession,
+  renameChatSession,
+  setChatSessionPinned,
+  type ChatMessageRecord,
+  type ChatSession,
+} from "../../api/chatSessions";
+import AuthDialog from "../../components/client/AuthDialog";
 import ChatHeader from "../../components/client/ChatHeader";
 import ChatSidebar from "../../components/client/ChatSidebar";
 import ContextMenu from "../../components/client/ContextMenu";
@@ -8,9 +26,48 @@ import DeleteDialog from "../../components/client/DeleteDialog";
 import MessageInput from "../../components/client/MessageInput";
 import MessageList from "../../components/client/MessageList";
 import WelcomeView from "../../components/client/WelcomeView";
+import RenameDialog from "../../components/client/RenameDialog";
 import { SUGGESTED_QUESTIONS } from "../../data/chatSuggestions";
-import type { AssistantMessage, ChatMessage, Conversation } from "../../data/chatTypes";
+import type {
+  AssistantMessage,
+  ChatMessage,
+  Conversation,
+  SuggestedQuestion,
+} from "../../data/chatTypes";
 import type { ChatResponse, ClarifyOption } from "../../types/chat";
+
+const ACTIVE_SESSION_KEY = "chat.active-session";
+
+function readStoredSession(): string {
+  try {
+    const stored = window.sessionStorage.getItem(ACTIVE_SESSION_KEY);
+    if (stored) return stored;
+
+    // Tương thích link cũ `?session=...`: đọc một lần rồi xoá khỏi URL.
+    const legacy = new URLSearchParams(window.location.search).get("session");
+    if (!legacy) return "";
+
+    window.sessionStorage.setItem(ACTIVE_SESSION_KEY, legacy);
+    const url = new URL(window.location.href);
+    url.searchParams.delete("session");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+    return legacy;
+  } catch {
+    return "";
+  }
+}
+
+function writeStoredSession(sessionId: string | null): void {
+  try {
+    if (sessionId) {
+      window.sessionStorage.setItem(ACTIVE_SESSION_KEY, sessionId);
+    } else {
+      window.sessionStorage.removeItem(ACTIVE_SESSION_KEY);
+    }
+  } catch {
+    // Trình duyệt chặn storage — vẫn chạy trong bộ nhớ của trang.
+  }
+}
 
 interface DeleteTarget {
   id: string;
@@ -19,12 +76,110 @@ interface DeleteTarget {
   meta: string;
 }
 
+interface RenameTarget {
+  id: string;
+  title: string;
+}
+
 function currentTime(): string {
   return new Date().toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
 }
 
+/** Chuyển một message UI thành text để gửi làm history cho guest. */
+function asHistoryText(message: ChatMessage): string {
+  if (message.role === "user") return message.text;
+
+  return message.blocks
+    .map((block) => {
+      if ("text" in block) {
+        return "label" in block ? `${block.label}: ${block.text}` : block.text;
+      }
+      if ("items" in block) {
+        return block.items
+          .map((item) =>
+            Object.values(item)
+              .filter((value): value is string => typeof value === "string")
+              .join(" "),
+          )
+          .join("\n");
+      }
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+}
+
+function asConversation(session: ChatSession): Conversation {
+  return {
+    id: session.id,
+    title: session.title,
+    pinned: session.is_pinned,
+    path: session.id,
+    messages: [],
+    messageCount: session.message_count,
+  };
+}
+
+function formatMessageTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Dựng lại đúng cấu trúc tin nhắn từ bản ghi server (để mở lại phiên cũ). */
+function asChatMessage(record: ChatMessageRecord): ChatMessage {
+  if (record.role === "user") {
+    return {
+      id: record.id,
+      role: "user",
+      text: record.content,
+      time: formatMessageTime(record.created_at),
+    };
+  }
+
+  const meta = record.metadata as Partial<ChatResponse>;
+  const rawFeedback = record.metadata.feedback;
+  const feedback =
+    rawFeedback && typeof rawFeedback === "object"
+      ? (rawFeedback as { value?: "like" | "dislike"; reasons?: unknown; comment?: unknown })
+      : null;
+  const response: ChatResponse = {
+    answer: record.content,
+    citations: meta.citations ?? [],
+    documents: meta.documents ?? [],
+    procedure: meta.procedure,
+    status: meta.status ?? "answered",
+    options: meta.options ?? [],
+    abstained: meta.abstained ?? false,
+  };
+  return {
+    ...assistantMessage(response),
+    id: record.id,
+    messageId: record.id,
+    feedback:
+      feedback && (feedback.value === "like" || feedback.value === "dislike")
+        ? feedback.value
+        : null,
+    feedbackReasons: Array.isArray(feedback?.reasons)
+      ? feedback.reasons.filter((item): item is string => typeof item === "string")
+      : [],
+    feedbackComment: typeof feedback?.comment === "string" ? feedback.comment : "",
+  };
+}
+
 function assistantMessage(response: ChatResponse): AssistantMessage {
-  const blocks: AssistantMessage["blocks"] = [{ kind: "paragraph", text: response.answer }];
+  const blocks: AssistantMessage["blocks"] = [
+    { kind: "paragraph", text: response.answer },
+  ];
+
+  if (response.documents?.length) {
+    blocks.push({
+      kind: "files",
+      items: response.documents,
+    });
+  }
+
   if (response.citations.length > 0) {
     blocks.push({
       kind: "citation",
@@ -44,7 +199,7 @@ function assistantMessage(response: ChatResponse): AssistantMessage {
     // trả lời khi cần. Chỉ giữ ghi chú **về hành động** mà người dùng phải làm.
     authorNote:
       response.status === "clarify"
-        ? "Cần bạn chọn"
+        ? "Cần bạn mô tả lại"
         : response.status === "abstained"
           ? "Chưa trả lời được"
           : undefined,
@@ -69,13 +224,71 @@ function errorMessage(message: string): AssistantMessage {
  * Mỗi câu hỏi được gửi tới public chat API và hiển thị câu trả lời từ workflow thật.
  */
 export default function ChatPage() {
+  const [requestedSessionId, setRequestedSessionId] =
+    useState(readStoredSession);
+
   const [pinned, setPinned] = useState<Conversation[]>([]);
   const [recent, setRecent] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState("");
   const activeIdRef = useRef("");
+  const visitRecorded = useRef(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prefill, setPrefill] = useState("");
+  const [suggestions, setSuggestions] =
+    useState<SuggestedQuestion[]>(SUGGESTED_QUESTIONS);
+  const [defaultSuggestions, setDefaultSuggestions] =
+    useState<SuggestedQuestion[]>(SUGGESTED_QUESTIONS);
   const [isSending, setIsSending] = useState(false);
+
+  const applySuggestions = (
+    items: { id: string; question: string }[] | undefined,
+  ) => {
+    if (!Array.isArray(items)) return;
+    setSuggestions(
+      items.map((item) => ({
+        id: item.id,
+        text: item.question,
+      })),
+    );
+  };
+
+  const lastUserText = useMemo(() => {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.role === "user") return message.text.trim();
+    }
+    return "";
+  }, [messages]);
+
+  const followUpSuggestions = useMemo(
+    () =>
+      suggestions
+        .filter((item) => item.text.trim() !== lastUserText)
+        .slice(0, 5),
+    [lastUserText, suggestions],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+
+    getFaqSuggestions(6)
+      .then((response) => {
+        if (cancelled) return;
+        const defaults = response.items.map((item) => ({
+          id: item.id,
+          text: item.question,
+        }));
+        setDefaultSuggestions(defaults);
+        setSuggestions(defaults);
+      })
+      .catch(() => {
+        // Giữ danh sách tĩnh nếu API FAQ chưa sẵn sàng.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   /**
    * Lựa chọn của câu hỏi lại gần nhất.
    *
@@ -88,8 +301,13 @@ export default function ChatPage() {
   const cuoiTrang = useRef<HTMLDivElement>(null);
   const cuonDenLuotMoi = useRef(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [authRestoring, setAuthRestoring] = useState(true);
   const [menu, setMenu] = useState<{ id: string; anchor: HTMLElement } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
 
   const allConversations = useMemo(() => [...pinned, ...recent], [pinned, recent]);
   const menuConversation = menu ? allConversations.find((item) => item.id === menu.id) : undefined;
@@ -100,24 +318,202 @@ export default function ChatPage() {
     cuoiTrang.current?.scrollIntoView({ block: "end" });
   }, [messages]);
 
+  useEffect(() => {
+    if (visitRecorded.current) return;
+    visitRecorded.current = true;
+    void recordPageVisit().catch(() => {
+      // Lỗi đếm lượt truy cập không được ảnh hưởng tới chat.
+    });
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    void restoreSession()
+      .then((session) => {
+        if (!mounted) return;
+        setCurrentUser(session.user);
+      })
+      .catch(() => {
+        // Không có phiên: giữ trạng thái khách.
+      })
+      .finally(() => {
+        if (mounted) setAuthRestoring(false);
+      });
+
+    return () => {
+      mounted = false;
+    };
+  }, []);
+
   const closeSidebar = () => setMobileSidebarOpen(false);
 
-  const handleNewConversation = () => {
+  /**
+   * Giữ cuộc trò chuyện đang mở trong sessionStorage.
+   *
+   * Nhờ vậy F5 vẫn mở lại đúng phiên, nhưng ID không nằm trên URL
+   * (không lọt vào history, Referer hay log proxy).
+   */
+  const setActiveSession = (sessionId: string | null) => {
+    writeStoredSession(sessionId);
+    setRequestedSessionId(sessionId ?? "");
+  };
+
+  const loadSessions = async () => {
+    const { items } = await getChatSessions();
+    const conversations = items.map(asConversation);
+    setPinned(conversations.filter((item) => item.pinned));
+    setRecent(conversations.filter((item) => !item.pinned));
+  };
+
+  useEffect(() => {
+    if (!currentUser) return;
+    void loadSessions();
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (authRestoring || currentUser) return;
+    let mounted = true;
+    getGuestSession()
+      .then((guest) => {
+        if (!mounted || guest.messages.length === 0) return;
+        activeIdRef.current = guest.session_id;
+        setActiveId(guest.session_id);
+        setMessages(guest.messages.map(asChatMessage));
+      })
+      .catch(() => {
+        // Chưa có phiên khách hoặc phiên đã hết hạn: chờ câu hỏi đầu tiên.
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [authRestoring, currentUser]);
+
+  const handleDeleteGuestConversation = async () => {
+    try {
+      await deleteGuestSession();
+    } catch {
+      // Cookie/phiên đã hết hạn thì cũng coi như xoá xong.
+    }
+    resetTemporaryConversation();
+    setActiveSession(null);
+  };
+
+  const resetTemporaryConversation = () => {
     activeIdRef.current = "";
+    setPinned([]);
+    setRecent([]);
     setActiveId("");
     setMessages([]);
     setPrefill("");
+    setPendingOptions([]);
+    setSuggestions(defaultSuggestions);
+    setMenu(null);
+    setDeleteTarget(null);
+    setRenameTarget(null);
+    closeSidebar();
+  };
+
+  const handleAuthenticate = async (
+    mode: "login" | "register",
+    username: string,
+    password: string,
+  ) => {
+    const session = mode === "login" ? await login(username, password) : await register(username, password);
+    if (!currentUser) {
+      try {
+        await deleteGuestSession();
+      } catch {
+        // Phiên khách đã hết hạn thì không cần xoá nữa.
+      }
+    }
+    resetTemporaryConversation();
+    setActiveSession(null);
+    setCurrentUser(session.user);
+  };
+
+  const handleLogout = async () => {
+    try {
+      await logout();
+    } finally {
+      setCurrentUser(null);
+      setActiveSession(null);
+      resetTemporaryConversation();
+    }
+  };
+
+  const handleNewConversation = async () => {
+    if (isSending) return;
+
+    const session = await createChatSession();
+    const conversation = asConversation(session);
+    setPinned((previous) => session.is_pinned ? [conversation, ...previous] : previous);
+    setRecent((previous) => session.is_pinned ? previous : [conversation, ...previous]);
+    activeIdRef.current = session.id;
+    setActiveId(session.id);
+    setActiveSession(session.id);
+    setMessages([]);
+    setPrefill("");
+    setPendingOptions([]);
+    setSuggestions(defaultSuggestions);
     setMenu(null);
     closeSidebar();
   };
 
-  const handleSelectConversation = (id: string) => {
+  const handleSelectConversation = async (id: string) => {
     activeIdRef.current = id;
     setActiveId(id);
+    setActiveSession(id);
     setMenu(null);
+    setPendingOptions([]);
+
     const conversation = allConversations.find((item) => item.id === id);
     setMessages(conversation?.messages ?? []);
+
+    // Phiên tạm (chưa đăng nhập) chỉ có trong bộ nhớ; không gọi API.
+    if (!currentUser) return;
+
+    try {
+      const { items } = await getChatMessages(id);
+      if (activeIdRef.current !== id) return;
+
+      const loaded = items.map(asChatMessage);
+      setMessages(loaded);
+      const update = (conversations: Conversation[]) =>
+        conversations.map((item) =>
+          item.id === id ? { ...item, messages: loaded, messageCount: loaded.length } : item,
+        );
+      setPinned(update);
+      setRecent(update);
+
+      // Khôi phục nút hỏi lại nếu tin nhắn cuối cùng là một câu hỏi làm rõ.
+      const last = items[items.length - 1];
+      const meta = last?.metadata as Partial<ChatResponse> | undefined;
+      if (last?.role === "assistant" && meta?.status === "clarify") {
+        setPendingOptions([]);
+      }
+    } catch (error) {
+      // Session đã bị xoá hoặc không còn thuộc user: bỏ khỏi URL để F5 không lặp lỗi.
+      if (error instanceof ApiError && error.status === 404 && activeIdRef.current === id) {
+        activeIdRef.current = "";
+        setActiveId("");
+        setMessages([]);
+        setActiveSession(null);
+      }
+      // Lỗi mạng: giữ tin nhắn đang có trong bộ nhớ, không làm trắng khung chat.
+    }
   };
+
+  // F5: sau khi biết user, mở lại phiên đang lưu trong sessionStorage
+  // và tải tin nhắn. Effect chạy lại khi user hoặc session đang mở đổi.
+  useEffect(() => {
+    if (!currentUser || !requestedSessionId) return;
+    if (activeIdRef.current === requestedSessionId) return;
+    void handleSelectConversation(requestedSessionId);
+    // `handleSelectConversation` là hàm trong cùng render; các phụ thuộc thật
+    // là user hiện tại và id phiên đang lưu.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser, requestedSessionId]);
 
   /** Thay một tin nhắn đã có (dùng cho khung trả lời đang chạy chữ). */
   const replaceMessage = (conversationId: string, message: ChatMessage) => {
@@ -144,7 +540,22 @@ export default function ChatPage() {
 
   const appendToConversation = (id: string, message: ChatMessage) => {
     const append = (items: Conversation[]) =>
-      items.map((item) => item.id === id ? { ...item, messages: [...item.messages, message] } : item);
+      items.map((item) => {
+        if (item.id !== id) return item;
+        const previousCount = item.messageCount ?? item.messages.length;
+        const title =
+          message.role === "user" && previousCount === 0
+            ? message.text.length > 48
+              ? `${message.text.slice(0, 47)}…`
+              : message.text
+            : item.title;
+        return {
+          ...item,
+          title,
+          messages: [...item.messages, message],
+          messageCount: previousCount + 1,
+        };
+      });
     setPinned(append);
     setRecent(append);
   };
@@ -161,11 +572,22 @@ export default function ChatPage() {
       text,
       time: currentTime(),
     };
-    const conversationId = activeId || `conversation-${crypto.randomUUID()}`;
-    if (!activeId) {
+    let conversationId = activeId;
+    let hasServerSession = Boolean(activeId);
+    if (!conversationId) {
+      const session = currentUser ? await createChatSession() : await createGuestSession();
+      conversationId = "id" in session ? session.id : session.session_id;
+      hasServerSession = true;
       const title = text.length > 48 ? `${text.slice(0, 47)}…` : text;
       setRecent((previous) => [
-        { id: conversationId, title, pinned: false, path: conversationId, messages: [userMessage] },
+        {
+          id: conversationId,
+          title,
+          pinned: false,
+          path: conversationId,
+          messages: [userMessage],
+          messageCount: 1,
+        },
         ...previous,
       ]);
       activeIdRef.current = conversationId;
@@ -173,10 +595,27 @@ export default function ChatPage() {
     } else {
       appendToConversation(conversationId, userMessage);
     }
+    if (hasServerSession) setActiveSession(conversationId);
     setMessages((previous) => [...previous, userMessage]);
     setPrefill("");
     setPendingOptions([]);
     setIsSending(true);
+
+    const requestPayload = hasServerSession
+      ? {
+          question: text,
+          session_id: conversationId,
+        }
+      : {
+          question: text,
+          history: messages
+            .map((message) => ({
+              role: message.role,
+              content: asHistoryText(message),
+            }))
+            .filter((message) => message.content.length > 0)
+            .slice(-6),
+        };
 
     // Khung trả lời rỗng, được đổ chữ dần khi máy chủ phát từng mẩu.
     const dangTraLoi: AssistantMessage = {
@@ -232,14 +671,15 @@ export default function ChatPage() {
 
     try {
       const ket_qua: StreamKetQua = await askChatStream(
-        { question: text },
+        requestPayload,
         {
           onDelta: (manh) => {
             gom += manh;
             hangDoi += manh;
           },
           onMeta: (meta) => {
-            setPendingOptions(meta.status === "clarify" ? meta.options : []);
+            setPendingOptions([]);
+            applySuggestions(meta.suggestions);
             // Truy xuất xong, mô hình bắt đầu viết: đổi nhãn để người dùng biết đang ở bước nào.
             replaceMessage(conversationId, { ...dangTraLoi, phase: "answering" });
           },
@@ -252,16 +692,27 @@ export default function ChatPage() {
       const cuoi: ChatResponse = {
         answer: ket_qua.answer || gom,
         citations: ket_qua.meta?.citations ?? [],
+        documents: ket_qua.meta?.documents ?? [],
         procedure: ket_qua.meta?.procedure ?? undefined,
         status: ket_qua.meta?.status ?? "answered",
         options: ket_qua.meta?.options ?? [],
         abstained: (ket_qua.meta?.status ?? "answered") !== "answered",
+        suggestions: ket_qua.meta?.suggestions ?? [],
       };
-      replaceMessage(conversationId, { ...assistantMessage(cuoi), id: dangTraLoi.id });
-      if (cuoi.status === "clarify") setPendingOptions(cuoi.options ?? []);
+      replaceMessage(conversationId, {
+        ...assistantMessage(cuoi),
+        id: dangTraLoi.id,
+        messageId: ket_qua.meta?.message_id,
+      });
+      if (cuoi.status === "clarify") setPendingOptions([]);
+
     } catch (error) {
       const thong_diep =
         error instanceof Error ? error.message : "Không thể kết nối tới máy chủ.";
+      if (error instanceof ApiError && error.status === 401 && !currentUser) {
+        resetTemporaryConversation();
+        setActiveSession(null);
+      }
       replaceMessage(conversationId, {
         ...errorMessage(thong_diep),
         id: dangTraLoi.id,
@@ -290,18 +741,19 @@ export default function ChatPage() {
     void handleSend(cau);
   };
 
-  const handleTogglePin = (targetId?: string) => {
+  const handleTogglePin = async (targetId?: string) => {
     const id = targetId ?? menu?.id;
     if (!id) return;
     const item = allConversations.find((conversation) => conversation.id === id);
     if (!item) return;
 
-    const next = { ...item, pinned: !item.pinned };
+    const updated = await setChatSessionPinned(id, !item.pinned);
+    const next = { ...item, pinned: updated.is_pinned };
     setPinned((previous) =>
-      next.pinned ? [...previous, next] : previous.filter((conversation) => conversation.id !== id),
+      next.pinned ? [next, ...previous.filter((conversation) => conversation.id !== id)] : previous.filter((conversation) => conversation.id !== id),
     );
     setRecent((previous) =>
-      next.pinned ? previous.filter((conversation) => conversation.id !== id) : [...previous, next],
+      next.pinned ? previous.filter((conversation) => conversation.id !== id) : [next, ...previous.filter((conversation) => conversation.id !== id)],
     );
     setMenu(null);
   };
@@ -311,47 +763,105 @@ export default function ChatPage() {
     const item = allConversations.find((conversation) => conversation.id === menu.id);
     if (!item) return;
 
-    setDeleteTarget({ id: item.id, title: item.title, meta: `${item.messages.length} tin nhắn` });
+    setDeleteTarget({
+      id: item.id,
+      title: item.title,
+      meta: `${item.messageCount ?? item.messages.length} tin nhắn`,
+    });
     setMenu(null);
   };
 
-  const handleConfirmDelete = () => {
+  const handleRequestRename = () => {
+    if (!menu) return;
+    const item = allConversations.find((conversation) => conversation.id === menu.id);
+    if (!item) return;
+
+    setRenameTarget({ id: item.id, title: item.title });
+    setMenu(null);
+  };
+
+  const handleConfirmRename = async (title: string) => {
+    if (!renameTarget) return;
+    const updated = await renameChatSession(renameTarget.id, title);
+    const replace = (items: Conversation[]) =>
+      items.map((item) => (item.id === updated.id ? { ...item, title: updated.title } : item));
+    setPinned(replace);
+    setRecent(replace);
+    setRenameTarget(null);
+  };
+
+  const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
     const { id } = deleteTarget;
+    await deleteChatSession(id);
     setPinned((previous) => previous.filter((conversation) => conversation.id !== id));
     setRecent((previous) => previous.filter((conversation) => conversation.id !== id));
     if (activeId === id) {
       activeIdRef.current = "";
       setActiveId("");
       setMessages([]);
+      setActiveSession(null);
+      setSuggestions(defaultSuggestions);
     }
     setDeleteTarget(null);
   };
 
+  if (authRestoring) {
+    return (
+      <div
+        className="flex min-h-screen items-center justify-center bg-main-bg text-text-secondary"
+        aria-busy="true"
+        aria-label="Đang khôi phục phiên đăng nhập"
+      >
+        <span className="material-symbols-outlined animate-spin text-[24px]">progress_activity</span>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-main-bg font-sans text-text-primary antialiased">
-      <ChatSidebar
-        pinned={pinned}
-        recent={recent}
-        activeId={activeId}
-        menuForId={menu?.id ?? null}
-        mobileOpen={mobileSidebarOpen}
-        onClose={closeSidebar}
-        onSelect={handleSelectConversation}
-        onNewConversation={handleNewConversation}
-        onTogglePin={handleTogglePin}
-        onOpenMenu={(id, anchor) => setMenu({ id, anchor })}
-      />
+      {currentUser ? (
+        <ChatSidebar
+          pinned={pinned}
+          recent={recent}
+          activeId={activeId}
+          menuForId={menu?.id ?? null}
+          mobileOpen={mobileSidebarOpen}
+          collapsed={sidebarCollapsed}
+          onClose={closeSidebar}
+          onToggleCollapsed={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          onSelect={handleSelectConversation}
+          onNewConversation={handleNewConversation}
+          onTogglePin={handleTogglePin}
+          onOpenMenu={(id, anchor) => setMenu({ id, anchor })}
+        />
+      ) : null}
 
-      <div className="md:pl-[260px]">
-        <ChatHeader onOpenSidebar={() => setMobileSidebarOpen(true)} />
+      <div className={currentUser && !sidebarCollapsed ? "md:pl-[260px]" : ""}>
+        <ChatHeader
+          onOpenAuth={() => setAuthOpen(true)}
+          onLogout={handleLogout}
+          onDeleteGuestConversation={
+            currentUser === null && messages.length > 0
+              ? () => void handleDeleteGuestConversation()
+              : undefined
+          }
+          onOpenSidebar={() => setMobileSidebarOpen(true)}
+          onToggleSidebar={() => setSidebarCollapsed((collapsed) => !collapsed)}
+          showSidebar={currentUser !== null}
+          sidebarCollapsed={sidebarCollapsed}
+          username={currentUser?.username ?? null}
+        />
 
         {messages.length === 0 ? (
           <main className="relative flex min-h-[calc(100vh-64px)] flex-col justify-between pt-16">
             <WelcomeView
-              suggestions={SUGGESTED_QUESTIONS}
+              suggestions={suggestions.slice(0, 5)}
               prefill={prefill}
-              onPickSuggestion={setPrefill}
+              onPickSuggestion={(text) => {
+                setPrefill(text);
+                void handleSend(text);
+              }}
               onSend={handleSend}
               isSending={isSending}
             />
@@ -360,12 +870,24 @@ export default function ChatPage() {
           <>
             <main className="relative min-h-[calc(100vh-140px)] pb-36 pt-16">
               <div className="mx-auto max-w-[840px] px-6 py-8">
-                <MessageList messages={messages} />
+                <MessageList
+                  messages={messages}
+                  followUpSuggestions={isSending ? [] : followUpSuggestions}
+                  onPickSuggestion={(text) => {
+                    setPrefill(text);
+                    void handleSend(text);
+                  }}
+                />
                 <div ref={cuoiTrang} />
               </div>
             </main>
 
-            <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-border-color bg-main-bg/90 px-4 pb-4 pt-3 backdrop-blur-md md:left-[260px] md:px-8">
+            <div
+              className={[
+                "fixed bottom-0 left-0 right-0 z-40 border-t border-border-color bg-main-bg/90 px-4 pb-4 pt-3 backdrop-blur-md md:px-8",
+                currentUser && !sidebarCollapsed ? "md:left-[260px]" : "",
+              ].join(" ")}
+            >
               <div className="mx-auto max-w-[840px]">
                 {pendingOptions.length > 0 ? (
                   <div className="mb-2 flex flex-wrap gap-2" role="group" aria-label="Chọn thủ tục">
@@ -403,6 +925,7 @@ export default function ChatPage() {
           anchor={menu.anchor}
           pinned={menuConversation.pinned}
           onTogglePin={handleTogglePin}
+          onRename={handleRequestRename}
           onDelete={handleRequestDelete}
           onClose={() => setMenu(null)}
         />
@@ -414,6 +937,21 @@ export default function ChatPage() {
           meta={deleteTarget.meta}
           onCancel={() => setDeleteTarget(null)}
           onConfirm={handleConfirmDelete}
+        />
+      ) : null}
+
+      {renameTarget ? (
+        <RenameDialog
+          conversationTitle={renameTarget.title}
+          onCancel={() => setRenameTarget(null)}
+          onConfirm={handleConfirmRename}
+        />
+      ) : null}
+
+      {authOpen ? (
+        <AuthDialog
+          onAuthenticate={handleAuthenticate}
+          onClose={() => setAuthOpen(false)}
         />
       ) : null}
     </div>

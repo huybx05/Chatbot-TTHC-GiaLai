@@ -14,12 +14,28 @@ export default function DataAndChunkPage() {
   const [tab, setTab] = useState<"detail" | "sections">("detail");
   const [items, setItems] = useState<AdminProcedure[]>([]);
   const [selectedCode, setSelectedCode] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedSourceFields, setSelectedSourceFields] = useState<string[]>([]);
   const [detail, setDetail] = useState<AdminProcedureDetail | null>(null);
   const [sections, setSections] = useState<AdminSection[]>([]);
   const [selectedSection, setSelectedSection] = useState<AdminSection | null>(null);
   const [error, setError] = useState("");
 
   const selected = items.find((item) => item.code === selectedCode) ?? items[0];
+  const sourceFields = [...new Set(items.map((item) => item.source_field).filter(Boolean))].sort((a, b) => a.localeCompare(b, "vi"));
+  const normalizedQuery = searchQuery.trim().toLocaleLowerCase("vi");
+  const filteredItems = items.filter((item) => (
+    (!selectedSourceFields.length || selectedSourceFields.includes(item.source_field))
+    && (!normalizedQuery || item.code.toLocaleLowerCase("vi").includes(normalizedQuery) || item.name.toLocaleLowerCase("vi").includes(normalizedQuery))
+  ));
+
+  function toggleSourceField(sourceField: string) {
+    setSelectedSourceFields((current) => (
+      current.includes(sourceField)
+        ? current.filter((value) => value !== sourceField)
+        : [...current, sourceField]
+    ));
+  }
 
   useEffect(() => {
     getAdminProcedures()
@@ -47,9 +63,9 @@ export default function DataAndChunkPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Dữ liệu PostgreSQL"
-        title="Xem thủ tục, chunk và Q/A cùng một nơi"
-        description="Trang này đọc trực tiếp từ PostgreSQL qua backend admin API."
+        eyebrow="KHO DỮ LIỆU"
+        title="Quản lý dữ liệu thủ tục hành chính"
+        description="Tra cứu thông tin thủ tục, theo dõi chunks và kiểm tra nội dung được lưu trữ trong hệ thống."
       />
 
       {error ? (
@@ -58,50 +74,77 @@ export default function DataAndChunkPage() {
         </div>
       ) : null}
 
-      <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard icon="folder_open" label="Thủ tục" value={String(items.length)} note="Đang tải theo limit API" tone="info" />
-        <MetricCard icon="view_list" label="Số Chunk thủ tục đang xem" value={String(sections.length)} note="Từ procedure_sections" tone="ok" />
-        <MetricCard icon="verified" label="Trạng thái" value={selected?.status ?? "-"} note="Từ bảng procedures" tone="info" />
-        <MetricCard icon="warning" label="Cần review" value="0" note="Chưa nối rule kiểm tra" tone="ok" />
+      <div className="mb-4 grid gap-3 md:grid-cols-2">
+        <MetricCard label="Tổng số thủ tục" value={String(items.length)} note="Nguồn dữ liệu: Cổng Dịch vụ công Quốc gia" />
+        <MetricCard label="Số chunks thủ tục được chọn" value={String(sections.length)} note="" />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_420px]">
         <Card>
-          <div className="mb-4 grid gap-2 md:grid-cols-[1fr_180px_160px]">
-            <input className="rounded-lg border border-border-color bg-white px-3 py-2 text-sm outline-primary" placeholder="Tìm mã hoặc tên thủ tục..." />
-            <select className="rounded-lg border border-border-color bg-white px-3 py-2 text-sm">
-              <option>Toàn bộ lĩnh vực</option>
-            </select>
-            {/* <select className="rounded-lg border border-border-color bg-white px-3 py-2 text-sm">
-              <option>Tất cả trạng thái</option>
-            </select> */}
+          <div className="mb-4 grid gap-2 md:grid-cols-[1fr_240px]">
+            <input
+              className="rounded-lg border border-border-color bg-white px-3 py-2 text-sm outline-primary"
+              placeholder="Tìm mã hoặc tên thủ tục..."
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+            />
+            <details className="relative">
+              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg border border-border-color bg-white px-3 py-2 text-sm [&::-webkit-details-marker]:hidden">
+                {selectedSourceFields.length ? `Đã chọn ${selectedSourceFields.length} lĩnh vực` : "Toàn bộ lĩnh vực"}
+                <span className="material-symbols-outlined text-[18px] text-text-secondary">expand_more</span>
+              </summary>
+              <div className="absolute right-0 z-20 mt-1 w-72 rounded-lg border border-border-color bg-card-surface p-2 shadow-lg">
+                <label className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm font-semibold hover:bg-secondary-surface">
+                  <input
+                    type="checkbox"
+                    checked={!selectedSourceFields.length}
+                    onChange={() => setSelectedSourceFields([])}
+                  />
+                  Toàn bộ lĩnh vực
+                </label>
+                <div className="max-h-64 overflow-y-auto border-t border-border-color pt-1">
+                  {sourceFields.map((sourceField) => (
+                    <label key={sourceField} className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-secondary-surface">
+                      <input
+                        type="checkbox"
+                        checked={selectedSourceFields.includes(sourceField)}
+                        onChange={() => toggleSourceField(sourceField)}
+                      />
+                      <span>{sourceField}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </details>
           </div>
 
           <div className="overflow-x-auto xl:max-h-[calc(100vh-16rem)] xl:overflow-y-auto">
-            <table className="w-full min-w-[760px] text-left text-sm">
+            <table className="w-full min-w-[900px] table-fixed text-left text-sm">
+              <colgroup>
+                <col className="w-[96px]" />
+                <col />
+                <col className="w-[240px]" />
+                <col className="w-[100px]" />
+              </colgroup>
               <thead className="border-b border-border-color text-xs uppercase text-text-secondary">
                 <tr>
-                  <th className="py-3 pr-3">Mã</th>
-                  <th className="py-3 pr-3">Tên thủ tục</th>
+                  <th className="py-3 pr-3">Mã TTHC</th>
+                  <th className="py-3 pr-3">Tên thủ tục hành chính</th>
                   <th className="py-3 pr-3">Lĩnh vực</th>
-                  {/* <th className="py-3 pr-3">Trạng thái</th> */}
-                  <th className="py-3 pr-3">Chunk</th>
+                  <th className="whitespace-nowrap py-3 pr-3 text-center">Số chunks</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border-color">
-                {items.map((item) => (
+                {filteredItems.map((item) => (
                   <tr
                     key={item.code}
                     className={item.code === selected?.code ? "bg-primary-soft/50" : "hover:bg-secondary-surface"}
                     onClick={() => setSelectedCode(item.code)}
                   >
                     <td className="py-3 pr-3 font-bold text-primary">{item.code}</td>
-                    <td className="py-3 pr-3">{item.name}</td>
-                    <td className="py-3 pr-3 text-text-secondary">{item.source_field}</td>
-                    {/* <td className="py-3 pr-3">
-                      <Badge tone={statusTone(item.status)}>{item.status}</Badge>
-                    </td> */}
-                    <td className="py-3 pr-3 font-semibold">{item.section_count}</td>
+                    <td className="break-words py-3 pr-3 leading-5">{item.name}</td>
+                    <td className="overflow-hidden text-ellipsis whitespace-nowrap py-3 pr-3 text-text-secondary" title={item.source_field}>{item.source_field}</td>
+                    <td className="whitespace-nowrap py-3 pr-3 text-center font-semibold">{item.section_count}</td>
                   </tr>
                 ))}
               </tbody>
@@ -112,17 +155,16 @@ export default function DataAndChunkPage() {
         <Card className="xl:sticky xl:top-24 xl:max-h-[calc(100vh-7rem)] xl:self-start xl:overflow-auto">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="text-xs font-bold uppercase text-text-secondary">Đang xem</p>
+              <p className="text-xs font-bold uppercase text-text-secondary">Thông tin thủ tục</p>
               <h3 className="mt-1 text-lg font-bold">{selected?.code ?? "Chưa có dữ liệu"}</h3>
               <p className="mt-1 text-sm leading-6 text-text-secondary">{selected?.name ?? "Backend chưa trả thủ tục."}</p>
             </div>
-            {/* {selected ? <Badge tone={statusTone(selected.status)}>{selected.status}</Badge> : null} */}
           </div>
 
           <div className="mt-4 grid grid-cols-2 rounded-lg bg-secondary-surface p-1">
             {[
-              ["detail", "Chi tiết"],
-              ["sections", "Chunk"],
+              ["detail", "Thông tin chung"],
+              ["sections", "Chunks"],
             ].map(([value, label]) => (
               <button
                 key={value}
@@ -138,11 +180,11 @@ export default function DataAndChunkPage() {
           {tab === "detail" ? (
             <dl className="mt-4 grid gap-3 text-sm">
               {[
-                ["domain_group", detail?.domain_group],
-                ["source_field", detail?.source_field],
-                ["canonical_field", detail?.canonical_field],
-                ["issuing_agency", detail?.issuing_agency],
-                ["detail_url", detail?.detail_url],
+                ["Nhóm lĩnh vực", detail?.domain_group],
+                ["Lĩnh vực chi tiết", detail?.source_field],
+                ["Mã lĩnh vực", detail?.canonical_field],
+                ["Cơ quan ban hành", detail?.issuing_agency],
+                ["Liên kết thủ tục gốc  ", detail?.detail_url],
               ].map(([key, value]) => (
                 <div key={key as string} className="rounded-lg border border-border-color bg-secondary-surface p-3">
                   <dt className="text-xs font-bold uppercase text-text-secondary">{String(key)}</dt>

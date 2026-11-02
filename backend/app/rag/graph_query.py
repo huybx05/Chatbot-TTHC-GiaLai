@@ -111,6 +111,8 @@ class Vocabulary:
     #: ``VanBanPhapLy``: ``(key, tên đầy đủ)`` — dùng để khớp văn bản **trong RAM**,
     #: nên khớp được cả khi người dùng gõ không dấu.
     documents: tuple[tuple[str, str], ...] = ()
+    #: ``QuyetDinh``: ``(key, tên)`` — quyết định ban hành, tách khỏi căn cứ pháp lý.
+    decisions: tuple[tuple[str, str], ...] = ()
     #: ``CoQuan``: tên cơ quan **đã tách** khỏi chuỗi nhồi.
     #:
     #: Đo được: **21/33** cạnh ``CO_THAM_QUYEN`` trỏ tới tên dài >200 ký tự — đó là 25
@@ -166,6 +168,14 @@ def _load_vocabulary_sync(run_id: str) -> Vocabulary:
                 r=run_id,
             ).data()
         )
+        decisions = tuple(
+            (str(r["k"]), str(r["ten"] or ""))
+            for r in s.run(
+                "MATCH (d:QuyetDinh {run_id: $r}) "
+                "RETURN d.key AS k, d.name AS ten ORDER BY d.key",
+                r=run_id,
+            ).data()
+        )
 
         # Cơ quan: tách ", " để có tên **nguyên tử** — chuỗi nhồi 25 chi nhánh phải vỡ
         # ra thì tra ngược mới khớp.
@@ -186,6 +196,7 @@ def _load_vocabulary_sync(run_id: str) -> Vocabulary:
         trang_thai=trang_thai,
         domain_group=domain_group,
         documents=documents,
+        decisions=decisions,
         co_quan=tuple(sorted(co_quan)),
     )
 
@@ -237,6 +248,8 @@ class DocumentMatch:
     name: str
     #: ``"number"`` = khớp số hiệu · ``"name"`` = khớp theo tên.
     matched_by: str
+    #: ``"legal_document"`` hoặc ``"decision"``.
+    kind: str = "legal_document"
 
 
 @dataclass(slots=True)
@@ -327,6 +340,37 @@ def _match_documents(
         return (vi_tri, len(m.name), m.key)
 
     danh_sach.sort(key=diem_xep_hang)
+    return DocumentResolution(candidates=danh_sach)
+
+
+def _match_decisions(
+    question: str, tu_dien: Vocabulary, *, gioi_han: int = 20
+) -> DocumentResolution:
+    """Tìm quyết định ban hành trong câu, tách khỏi văn bản pháp lý.
+
+    Chỉ khớp số hiệu (không khớp tên) vì dữ liệu hiện chỉ có số quyết định.
+    Không khớp mờ: một số sai phải báo không có, không đoán quyết định gần nhất.
+    """
+    so_hieu = document_numbers(question)
+    if not so_hieu:
+        return DocumentResolution()
+
+    khop: dict[str, DocumentMatch] = {}
+    for so in so_hieu:
+        truc_tiep = [d for d in tu_dien.decisions if d[0] == so]
+        if truc_tiep:
+            for key, ten in truc_tiep:
+                khop.setdefault(key, DocumentMatch(key, ten, "number", "decision"))
+            continue
+        mot_phan = [d for d in tu_dien.decisions if so and so in d[0]]
+        for key, ten in mot_phan[:gioi_han]:
+            khop.setdefault(key, DocumentMatch(key, ten, "number", "decision"))
+
+    if not khop:
+        return DocumentResolution(missing=so_hieu)
+    danh_sach = sorted(khop.values(), key=lambda item: item.key)
+    if len(danh_sach) == 1:
+        return DocumentResolution(unique=danh_sach[0])
     return DocumentResolution(candidates=danh_sach)
 
 
@@ -655,7 +699,30 @@ INTENTS: tuple[IntentSpec, ...] = (
         needs=("code",),
         empty="Thủ tục này chưa có quan hệ nào trong đồ thị.",
     ),
+    # Chỉ được chọn qua intent từ planner (facet related_procedures + subject decision).
+    # Không có từ khoá nên classify không tự chọn.
+    IntentSpec(
+        intent="PROCEDURES_BY_DECISION",
+        title="Thủ tục thuộc quyết định",
+        template="PROCEDURES_BY_DECISION",
+        needs=("document",),
+        empty="Chưa ghi nhận thủ tục nào thuộc quyết định này.",
+    ),
 )
+
+
+def _decision_intent() -> IntentSpec:
+    """Intent cho quyết định ban hành, không tham gia phân loại từ khoá.
+
+    Planner chọn intent này từ facet + kiểu subject; không có danh sách cụm từ.
+    """
+    return IntentSpec(
+        intent="PROCEDURES_BY_DECISION",
+        title="Thủ tục thuộc quyết định",
+        template="PROCEDURES_BY_DECISION",
+        needs=("document",),
+        empty="Chưa ghi nhận thủ tục nào thuộc quyết định này.",
+    )
 
 
 _TOKEN = re.compile(r"[a-z0-9]+")
@@ -687,6 +754,10 @@ def _khop_cum(tu_cau: tuple[str, ...], cum: str) -> bool:
 
 def _khop_tu_khoa(spec: IntentSpec, tu_cau: tuple[str, ...]) -> bool:
     """Spec có khớp **từ khoá** của câu không — chưa xét tham số bắt buộc."""
+    if not (spec.any_of or spec.all_of or spec.each_of):
+        # Intent cấu trúc (ví dụ PROCEDURES_BY_DECISION) chỉ được planner chọn;
+        # không tham gia phân loại từ khoá.
+        return False
     if spec.all_of and not all(_khop_cum(tu_cau, x) for x in spec.all_of):
         return False
     if spec.any_of and not any(_khop_cum(tu_cau, x) for x in spec.any_of):
@@ -879,11 +950,18 @@ def classify_all(
 
 
 def _specs_for_facets(
-    facets: list[str], *, code: str | None, entity: EntityMatch | None
+    facets: list[str],
+    *,
+    code: str | None,
+    entity: EntityMatch | None,
+    document_kind: str = "",
 ) -> list[IntentSpec]:
     """Đổi facet đã được QuestionFrame hiểu sang template Graph trong allowlist."""
     by_intent = {spec.intent: spec for spec in INTENTS}
     intents: list[str] = []
+
+    if document_kind == "decision" and "related_procedures" in facets:
+        return [_decision_intent()]
 
     if code:
         mapping = {
@@ -963,6 +1041,7 @@ def cap_chua_ghi_nhan(question: str, tu_dien: Vocabulary) -> str:
 
 
 match_documents = _match_documents
+match_decisions = _match_decisions
 match_entities = _match_entities
 
 
@@ -1205,7 +1284,9 @@ COUNT_TEMPLATES: dict[str, str] = {
 COLUMNS: dict[str, tuple[tuple[str, str, bool], ...]] = {
     "AGENCY": (
         ("vai_tro", "Vai trò", False),
-        ("gia_tri", "Cơ quan", True),
+        # Mỗi cạnh là một CoQuan; tên có dấu phẩy vẫn là MỘT cơ quan, không tách
+        # thành nhiều cơ quan giả (ví dụ "Ủy ban Nhân dân xã, phường, thị trấn").
+        ("gia_tri", "Cơ quan", False),
     ),
     "CLASSIFY": (
         ("loai", "Loại thông tin", False),
@@ -1232,26 +1313,35 @@ COLUMNS: dict[str, tuple[tuple[str, str, bool], ...]] = {
         ("ma_thu_tuc", "Mã thủ tục", False),
         ("ten", "Tên thủ tục", False),
     ),
+    "PROCEDURES_BY_DECISION": (
+        ("ma_thu_tuc", "Mã thủ tục", False),
+        ("ten", "Tên thủ tục", False),
+        ("detail_url", "Đường dẫn chi tiết", False),
+    ),
     "PROCEDURES_BY_AGENCY": (
         ("ma_thu_tuc", "Mã thủ tục", False),
         ("ten", "Tên thủ tục", False),
         ("co_quan", "Cơ quan", False),
         ("vai_tro", "Vai trò", False),
+        ("detail_url", "Đường dẫn", False),
     ),
     "PROCEDURES_BY_LEVEL": (
         ("ma_thu_tuc", "Mã thủ tục", False),
         ("ten", "Tên thủ tục", False),
         ("cap", "Cấp", True),
+        ("detail_url", "Đường dẫn", False),
     ),
     "PROCEDURES_BY_FIELD": (
         ("ma_thu_tuc", "Mã thủ tục", False),
         ("ten", "Tên thủ tục", False),
         ("linh_vuc", "Lĩnh vực", False),
+        ("detail_url", "Đường dẫn", False),
     ),
     "PROCEDURES_BY_GROUP": (
         ("ma_thu_tuc", "Mã thủ tục", False),
         ("ten", "Tên thủ tục", False),
         ("nhom", "Nhóm lĩnh vực", False),
+        ("detail_url", "Đường dẫn", False),
     ),
     "TOP_DOCUMENTS": (
         ("ma_van_ban", "Mã văn bản", False),
@@ -1287,6 +1377,7 @@ RELATION_LABELS: dict[str, str] = {
     "DOI_TUONG_THUC_HIEN": "Đối tượng thực hiện",
     "KET_QUA_XU_LY": "Kết quả xử lý",
     "THU_TUC_LIEN_QUAN": "Thủ tục liên quan",
+    "CO_QUYET_DINH": "Quyết định ban hành",
 }
 
 #: Cạnh mà **đích là danh sách** nối bằng ``", "`` — chỉ những cạnh này mới được tách
@@ -1317,6 +1408,7 @@ NODE_LABELS: dict[str, str] = {
     "TrangThai": "Trạng thái",
     "DoiTuong": "Đối tượng",
     "KetQua": "Kết quả",
+    "QuyetDinh": "Quyết định",
 }
 
 #: Cạnh được phép dùng. ``THU_TUC_LIEN_QUAN`` **không** có trong allowlist vì bộ test
@@ -1365,6 +1457,9 @@ class GraphPart:
     total: int = 0
     truncated: bool = False
     empty: str = ""
+    procedure_code: str = ""
+    detail_url: str = ""
+    document_code: str = ""
 
 
 @dataclass(slots=True)
@@ -1374,6 +1469,11 @@ class GraphEvidence:
     intent: str
     title: str
     subject: str = ""
+    #: Neo4j không trả cột URL cho mọi template; giữ nguồn ở cấp evidence
+    #: để tầng citation không tạo citation rỗng.
+    procedure_code: str = ""
+    detail_url: str = ""
+    document_code: str = ""
     rows: list[dict[str, str]] = field(default_factory=list)
     #: **Nhiều phần** khi câu hỏi có nhiều ý. Rỗng = câu một ý (dùng ``rows``/``template``).
     parts: list[GraphPart] = field(default_factory=list)
@@ -1583,10 +1683,18 @@ def normalize_rows(
                 for dong_con in phan_manh:
                     dong_con[khoa] = gia_tri
 
+        # Giữ URL nguồn ngoài bảng cột hiển thị: cột này không dành cho câu trả lời
+        # nhưng cần cho citation của từng dòng trong template danh sách.
+        if thô.get("detail_url"):
+            for dong_con in phan_manh:
+                dong_con.setdefault("detail_url", str(thô["detail_url"]))
+
         da_chuan_hoa.extend(phan_manh)
 
     # Chỉ giữ cột đã khai báo, để thứ tự hiển thị ổn định.
     khoa = [c[0] for c in plan.columns]
+    if any("detail_url" in r for r in da_chuan_hoa):
+        khoa.append("detail_url")
     return [{k: r[k] for k in khoa if k in r} for r in da_chuan_hoa], subject
 
 
@@ -1612,6 +1720,29 @@ def _run_cypher(plan: GraphQueryPlan) -> list[dict[str, Any]]:
         timeout=settings.neo4j_timeout,
     )
     return [dict(r) for r in ket_qua.records]
+
+
+def _procedure_detail_url(code: str) -> str:
+    """URL của thủ tục trong Neo4j, dùng làm nguồn dự phòng cho template không trả URL."""
+    if not code:
+        return ""
+    try:
+        from neo4j import RoutingControl
+
+        result = driver.execute_query(
+            "MATCH (p:ThuTuc {run_id: $run_id, key: $code}) "
+            "RETURN p.detail_url AS url LIMIT 1",
+            {"run_id": settings.neo4j_run_id, "code": code},
+            database_=settings.neo4j_database,
+            routing_=RoutingControl.READ,
+            timeout=settings.neo4j_timeout,
+        )
+        if not result.records:
+            return ""
+        return str(result.records[0]["url"] or "")
+    except Exception:  # noqa: BLE001 — citation không được làm hỏng câu trả lời
+        logger.warning("Không lấy được detail_url cho thủ tục %s", code, exc_info=True)
+        return ""
 
 
 def _run_count(plan: GraphQueryPlan) -> int:
@@ -1641,6 +1772,8 @@ async def _answer(
     question: str,
     *,
     codes: list[str] | None = None,
+    document_key: str | None = None,
+    document_kind: str | None = None,
     limit: int = DEFAULT_LIMIT,
     get_vector: Callable[[], Awaitable[list[float]]] | None = None,
     requested_facets: list[str] | None = None,
@@ -1649,8 +1782,17 @@ async def _answer(
 ) -> GraphEvidence:
     """Trả lời một câu hỏi graph. **Không bao giờ ném lỗi** — hỏng thì trả ``note``."""
     bat_dau = time.perf_counter()
+    ma: str | None = None
+    doc_key: str = ""
 
     def xong(ev: GraphEvidence) -> GraphEvidence:
+        code = str(ev.procedure_code or ma or "")
+        if code and not ev.procedure_code:
+            ev.procedure_code = code
+        if code and not ev.detail_url:
+            ev.detail_url = _procedure_detail_url(code)
+        if doc_key and not ev.document_code:
+            ev.document_code = doc_key
         ev.latency_ms = int((time.perf_counter() - bat_dau) * 1000)
         return ev
 
@@ -1687,7 +1829,21 @@ async def _answer(
             )
         )
 
-    van_ban = _match_documents(question, tu_dien)
+    decision = _match_decisions(question, tu_dien)
+    if document_key and document_kind == "decision":
+        decision = DocumentResolution(
+            unique=DocumentMatch(document_key, document_key, "number", "decision")
+        )
+
+    van_ban = DocumentResolution()
+    doc_kind = ""
+    doc_key = document_key
+    if decision.unique is not None:
+        doc_key = decision.unique.key
+        doc_kind = "decision"
+    else:
+        van_ban = _match_documents(question, tu_dien)
+        doc_kind = "legal_document" if van_ban.unique else ""
 
     # ③ cấp hành chính người dùng nêu nhưng dữ liệu **không có** cấp đó.
     #
@@ -1708,7 +1864,21 @@ async def _answer(
             )
         )
 
-    # Không tìm thấy văn bản người dùng nêu → nói thẳng, không đoán.
+    # Không tìm thấy quyết định chỉ khi caller đã xác định subject là quyết định.
+    # Không được chặn câu hỏi về văn bản pháp lý cùng hình dạng số hiệu.
+    if decision.missing and not decision.unique and document_kind == "decision":
+        return xong(
+            GraphEvidence(
+                intent="NONE",
+                title="Không tìm thấy quyết định",
+                note=(
+                    "Không có quyết định nào khớp "
+                    + ", ".join(repr(m) for m in decision.missing[:3])
+                    + f" trong {len(tu_dien.decisions)} quyết định của đồ thị."
+                ),
+            )
+        )
+
     if van_ban.missing and not van_ban.unique and not van_ban.candidates:
         return xong(
             GraphEvidence(
@@ -1746,7 +1916,8 @@ async def _answer(
             )
         )
 
-    doc_key = van_ban.unique.key if van_ban.unique else None
+    if not doc_key and van_ban.unique:
+        doc_key = van_ban.unique.key
 
     # ③ KHỚP THỰC THỂ ĐÓNG trong RAM — 0 token, ~0,01 ms.
     # Đây là đường trả lời **không cần mã thủ tục**: lĩnh vực, cấp, nhóm, cơ quan đều
@@ -1775,7 +1946,9 @@ async def _answer(
             )
         )
 
-    semantic_specs = _specs_for_facets(requested_facets or [], code=ma, entity=thuc_the)
+    semantic_specs = _specs_for_facets(
+        requested_facets or [], code=ma, entity=thuc_the, document_kind=doc_kind
+    )
 
     # ④ Ranh giới: câu hỏi NỘI DUNG thì nhánh này từ chối, **kể cả khi có mã thủ tục**.
     # Đồ thị chỉ có quan hệ (ai ban hành, căn cứ văn bản nào, cùng văn bản với ai) —
@@ -1797,7 +1970,11 @@ async def _answer(
     if intent:
         # Executor đã chọn intent từ capability matrix; chỉ nhận intent trong allowlist,
         # **không** quay lại classify theo từ khoá.
-        spec = next((item for item in INTENTS if item.intent == intent), None)
+        spec = (
+            _decision_intent()
+            if intent == "PROCEDURES_BY_DECISION"
+            else next((item for item in INTENTS if item.intent == intent), None)
+        )
         if spec is None:
             return xong(
                 GraphEvidence(
@@ -1853,7 +2030,10 @@ async def _answer(
         if dinh_danh.code:
             ma = dinh_danh.code
             semantic_specs = _specs_for_facets(
-                requested_facets or [], code=ma, entity=thuc_the
+                requested_facets or [],
+                code=ma,
+                entity=thuc_the,
+                document_kind=doc_kind,
             )
             spec = semantic_specs[0] if semantic_specs else classify(
                 question, has_code=True, has_document=bool(doc_key), entity=thuc_the
@@ -2110,6 +2290,8 @@ async def answer(
     question: str,
     *,
     codes: list[str] | None = None,
+    document_key: str | None = None,
+    document_kind: str | None = None,
     limit: int = DEFAULT_LIMIT,
     get_vector: Callable[[], Awaitable[list[float]]] | None = None,
     requested_facets: list[str] | None = None,
@@ -2121,6 +2303,8 @@ async def answer(
     evidence = await _answer(
         question,
         codes=codes,
+        document_key=document_key,
+        document_kind=document_kind,
         limit=limit,
         get_vector=get_vector,
         requested_facets=requested_facets,

@@ -114,10 +114,10 @@ def test_tu_choi_khong_hien_cau_hoi_lai() -> None:
     assert not ra.get("clarify")
 
 
-# ── ③ Bước kết thúc: không có lựa chọn thì đổi thành từ chối ────────────
+# ── ③ Bước kết thúc: clarify rỗng vẫn là clarify ───────────────────────
 
 
-def test_ket_thuc_doi_hoi_lai_rong_thanh_tu_choi() -> None:
+def test_ket_thuc_giu_clarify_khi_khong_co_lua_chon() -> None:
     state = _state(
         "câu hỏi",
         outcome=Outcome.CLARIFY.value,
@@ -125,9 +125,8 @@ def test_ket_thuc_doi_hoi_lai_rong_thanh_tu_choi() -> None:
         clarify={"question": "", "options": []},
     )
     ra = asyncio.run(graph.node_ket_thuc(state))
-    assert ra["outcome"] == Outcome.ABSTAINED.value
-    assert ra["refusal"] == graph.HUONG_DAN_CHON
-    assert not (ra.get("clarify") or {}).get("question")
+    assert ra["outcome"] == Outcome.CLARIFY.value
+    assert ra["clarify"]["options"] == []
 
 
 def test_ket_thuc_giu_hoi_lai_co_lua_chon() -> None:

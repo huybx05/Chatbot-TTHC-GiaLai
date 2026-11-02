@@ -43,6 +43,7 @@ excel_to_json.py
 Diagram.drawio
 docs/*
 guide.txt
+PROJECT_GUIDE_V4_1.md
 
 # Danh mục thủ tục và bản trích xuất từ cổng (không commit vì dung lượng lớn)
 danh_sach_tthc_bo_tinh_xa.json
@@ -69,3 +70,28 @@ Thumbs.db
 data/*
 logs/*.jsonl
 tltk/*
+
+# ---------------------------------------------------------------------------
+# Local scratch / generated files (không đưa lên GitHub)
+# ---------------------------------------------------------------------------
+.tmp/
+.uv-cache/
+pytest-of-*/
+pytest-of-HUY/
+*.log
+logs/
+*.bak
+*.bkp
+*.orig
+*.rej
+*.tmp
+
+# File nháp / tài liệu cá nhân ở thư mục gốc
+json_to_txt.py
+mus01.docx
+hệ thống gợi ý câu hỏi.txt
+short-term memory du an truoc.md
+
+# Giữ tài liệu deploy trong repo dù docs/ đang được ignore
+!docs/deployment_vps_cloudflare.md
+

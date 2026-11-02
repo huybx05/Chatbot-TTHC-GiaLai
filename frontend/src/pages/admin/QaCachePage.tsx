@@ -13,10 +13,10 @@ export default function QaCachePage() {
       />
 
       <div className="mb-4 grid gap-3 md:grid-cols-4">
-        <MetricCard icon="quiz" label="Cặp Q/A" value="128" note="100+ cặp đã biên soạn" tone="info" />
-        <MetricCard icon="bolt" label="FAQ hit rate" value="34%" note="Fast-path trước RAG" tone="ok" />
-        <MetricCard icon="verified" label="Đã publish" value="96" note="Đã thẩm định nội dung" tone="ok" />
-        <MetricCard icon="rule" label="Holdout eval" value="32" note="Không nạp cache để đánh giá" tone="warn" />
+        <MetricCard label="Cặp Q/A" value="128" note="100+ cặp đã biên soạn" />
+        <MetricCard label="FAQ hit rate" value="34%" note="Fast-path trước RAG" />
+        <MetricCard label="Đã publish" value="96" note="Đã thẩm định nội dung" />
+        <MetricCard label="Holdout eval" value="32" note="Không nạp cache để đánh giá" />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[1.25fr_0.75fr]">

@@ -92,6 +92,36 @@ def test_processing_time_and_steps_also_go_to_sections() -> None:
     assert [task.facet for task in plan.tasks] == ["processing_time", "steps"]
 
 
+def test_receiving_agency_uses_section_lookup() -> None:
+    plan = plan_retrieval(
+        _frame([_request(Facet.RECEIVING_AGENCY)]),
+        [_resolved()],
+    )
+
+    assert plan.tasks[0].tool == planner.TOOL_SECTION
+    assert plan.tasks[0].procedure_codes == ("1.001699",)
+
+
+def test_decision_number_uses_fact_lookup() -> None:
+    plan = plan_retrieval(
+        _frame([_request(Facet.DECISION_NUMBER)]),
+        [_resolved()],
+    )
+
+    assert plan.tasks[0].tool == planner.TOOL_FACT
+    assert plan.tasks[0].procedure_codes == ("1.001699",)
+
+
+def test_result_delivery_uses_section_lookup() -> None:
+    plan = plan_retrieval(
+        _frame([_request(Facet.RESULT_DELIVERY)]),
+        [_resolved()],
+    )
+
+    assert plan.tasks[0].tool == planner.TOOL_SECTION
+    assert plan.tasks[0].procedure_codes == ("1.001699",)
+
+
 def test_graph_facet_with_code() -> None:
     plan = plan_retrieval(
         _frame([_request(Facet.IMPLEMENTING_AGENCY)]), [_resolved()]
@@ -126,11 +156,36 @@ def test_content_without_subject_falls_back_to_hybrid() -> None:
 # ── unsupported cases ──────────────────────────────────────────────────────
 
 
-def test_compare_and_rank_are_unsupported() -> None:
-    for operation in (RequestOperation.COMPARE, RequestOperation.RANK):
-        plan = plan_retrieval(_frame([_request(Facet.FEE, operation)]), [_resolved()])
-        assert plan.tasks == []
-        assert plan.unsupported[0]["reason"] == planner.REASON_UNSUPPORTED_OPERATION
+def test_compare_can_run_with_two_grounded_procedures() -> None:
+    plan = plan_retrieval(
+        _frame([_request(Facet.FEE, RequestOperation.COMPARE)]),
+        [_resolved(0, "1.001699"), _resolved(1, "1.014100")],
+    )
+
+    assert len(plan.tasks) == 1
+    assert plan.tasks[0].tool == planner.TOOL_SECTION
+    assert plan.tasks[0].procedure_codes == ("1.001699", "1.014100")
+
+
+def test_compare_with_one_procedure_is_unsupported() -> None:
+    plan = plan_retrieval(
+        _frame([_request(Facet.FEE, RequestOperation.COMPARE)]),
+        [_resolved()],
+    )
+    assert plan.tasks == []
+    assert (
+        plan.unsupported[0]["reason"]
+        == planner.REASON_COMPARE_REQUIRES_TWO_PROCEDURES
+    )
+
+
+def test_rank_is_unsupported() -> None:
+    plan = plan_retrieval(
+        _frame([_request(Facet.FEE, RequestOperation.RANK)]),
+        [_resolved()],
+    )
+    assert plan.tasks == []
+    assert plan.unsupported[0]["reason"] == planner.REASON_UNSUPPORTED_OPERATION
 
 
 def test_related_procedures_unsupported() -> None:
@@ -332,3 +387,55 @@ def test_different_constraints_are_not_merged() -> None:
     )
     plan = plan_retrieval(frame, [])
     assert len(plan.tasks) == 2
+
+
+def test_result_facet_chon_graph() -> None:
+    plan = plan_retrieval(_frame([_request(Facet.RESULT)]), [_resolved()])
+    assert plan.tasks[0].tool == planner.TOOL_GRAPH
+    assert plan.tasks[0].intent == "RESULT"
+    assert plan.tasks[0].fallback_tool == planner.TOOL_HYBRID
+
+
+def test_list_by_agency_duoc_chon_graph() -> None:
+    plan = plan_retrieval(
+        _frame(
+            [
+                _request(
+                    Facet.GENERAL_INFO,
+                    RequestOperation.LIST,
+                    subject_ref=0,
+                    text="Bộ Y tế ban hành thủ tục nào",
+                )
+            ],
+            mentions=[(SubjectType.AGENCY, "Bộ Y tế")],
+        ),
+        [_resolved(0, "Bộ Y tế", "agency")],
+    )
+
+    assert not plan.unsupported
+    task = plan.tasks[0]
+    assert task.tool == planner.TOOL_GRAPH
+    assert task.intent == "PROCEDURES_BY_AGENCY"
+    assert task.subject_key == "Bộ Y tế"
+    assert task.facet == Facet.GENERAL_INFO.value
+
+
+def test_list_by_level_duoc_chon_graph() -> None:
+    plan = plan_retrieval(
+        _frame(
+            [
+                _request(
+                    Facet.GENERAL_INFO,
+                    RequestOperation.LIST,
+                    subject_ref=0,
+                    text="Cấp xã thực hiện thủ tục nào",
+                )
+            ],
+            mentions=[(SubjectType.ADMINISTRATIVE_LEVEL, "Cấp xã")],
+        ),
+        [_resolved(0, "Cấp xã", "administrative_level")],
+    )
+
+    assert not plan.unsupported
+    assert plan.tasks[0].intent == "PROCEDURES_BY_LEVEL"
+    assert plan.tasks[0].facet == Facet.GENERAL_INFO.value

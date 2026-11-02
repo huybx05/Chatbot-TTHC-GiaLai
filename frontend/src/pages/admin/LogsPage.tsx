@@ -10,10 +10,10 @@ export default function LogsPage() {
       />
 
       <div className="mb-4 grid gap-3 md:grid-cols-4">
-        <MetricCard icon="error" label="ERROR" value="1" note="Reranker timeout" tone="bad" />
-        <MetricCard icon="warning" label="WARN" value="2" note="Index và graph warning" tone="warn" />
-        <MetricCard icon="info" label="INFO" value="1" note="Pipeline done" tone="info" />
-        <MetricCard icon="task_alt" label="Đã xử lý" value="2" note="50% log mẫu" tone="ok" />
+        <MetricCard label="ERROR" value="1" note="Reranker timeout" />
+        <MetricCard label="WARN" value="2" note="Index và graph warning" />
+        <MetricCard label="INFO" value="1" note="Pipeline done" />
+        <MetricCard label="Đã xử lý" value="2" note="50% log mẫu" />
       </div>
 
       <Card>

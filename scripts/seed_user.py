@@ -15,14 +15,14 @@ trực tiếp trên máy chủ.
     # Đổi mật khẩu tài khoản đã có
     uv run python scripts/seed_user.py --username admin --ask-password
 
-    # Tạo tài khoản chỉ đọc số liệu
-    uv run python scripts/seed_user.py --username analyst --role analyst --ask-password
+    # Tạo tài khoản người dùng chatbot
+    uv run python scripts/seed_user.py --username client --role client --ask-password
 
     # Liệt kê tài khoản hiện có
     uv run python scripts/seed_user.py --list
 
     # Vô hiệu hoá / kích hoạt lại
-    uv run python scripts/seed_user.py --username analyst --deactivate
+    uv run python scripts/seed_user.py --username client --deactivate
 
 ## Mật khẩu
 
@@ -151,8 +151,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--role",
         default="",
-        choices=["", "admin", "analyst", "viewer"],
-        help="quyền: admin (toàn quyền), analyst (đọc số liệu), viewer (chỉ đọc)",
+        choices=["", "admin", "client"],
+        help="quyền: admin (toàn quyền), client (người dùng chatbot)",
     )
     ap.add_argument("--full-name", default="", help="họ tên hiển thị")
     ap.add_argument("--email", default="", help="email (tuỳ chọn)")
@@ -270,7 +270,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  ✅ Đã đổi mật khẩu cho {args.username!r} (role={vai_tro})")
             print(f"  ✅ Đã thu hồi {n} phiên cũ")
         else:
-            vai_tro = args.role or "viewer"
+            vai_tro = args.role or "client"
             conn.execute(
                 text(
                     "INSERT INTO users (username, email, password_hash, role, full_name) "

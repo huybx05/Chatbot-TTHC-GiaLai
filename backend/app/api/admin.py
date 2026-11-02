@@ -6,26 +6,36 @@ Hai loại endpoint:
 * **Kiểm thử** — ``POST /retrieval/test`` chạy một chiến lược truy xuất và trả về
   candidate kèm điểm, để tune ngưỡng trên giao diện `/admin/rag-playground`.
 
-Không endpoint nào ghi vào nội dung nghiệp vụ. Riêng ``/qa/approve*`` cập nhật cột
-``status`` của bảng ``faq`` — đó là trạng thái duyệt, không phải nội dung.
+Ngoài ra có CRUD FAQ thủ công (không gắn thủ tục) dưới ``/faq``. Các endpoint
+này chỉ ghi bảng ``faq``, không đụng dữ liệu thủ tục.
 """
 
+import logging
 import time
 from typing import Any, Literal
+from uuid import UUID
 
 from elasticsearch import Elasticsearch
-from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field, field_validator
 from qdrant_client import QdrantClient
 from sqlalchemy import text
 
+from backend.app.api.faq import FAQ_INTENTS
+from backend.app.auth.dependencies import AdminUser, require_admin
 from backend.app.config import settings
 from backend.app.db.neo4j import driver
 from backend.app.db.postgres import engine
 from backend.app.rag import embeddings, fact_lookup, graph_query, hybrid
 from backend.app.rag.resolver import LazyQuestionVector
+from backend.app.rate_limit import limiter
 
-router = APIRouter(tags=["admin"])
+logger = logging.getLogger(__name__)
+
+router = APIRouter(
+    tags=["admin"],
+    dependencies=[Depends(require_admin)],
+)
 
 
 def _ok(**extra: Any) -> dict[str, Any]:
@@ -33,7 +43,21 @@ def _ok(**extra: Any) -> dict[str, Any]:
 
 
 def _fail(exc: Exception, **extra: Any) -> dict[str, Any]:
-    return {"ready": False, "error": str(exc), **extra}
+    logger.exception("Admin service check failed: %s", type(exc).__name__)
+    return {"ready": False, "error": "service_unavailable", **extra}
+
+
+def _enforce_llm_rate(admin: dict[str, Any]) -> None:
+    limit = settings.admin_llm_rate_limit_per_min
+    if limit <= 0:
+        return
+    result = limiter.check(f"admin-llm:{admin['id']}", limit=limit)
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Bạn đã chạy thử quá nhiều lần. Vui lòng thử lại sau.",
+            headers={"Retry-After": str(result.retry_after)},
+        )
 
 
 def _make_es_client() -> Elasticsearch:
@@ -65,7 +89,37 @@ def system_status() -> dict[str, Any]:
                       (SELECT COUNT(*) FROM procedures)::int AS procedures,
                       (SELECT COUNT(*) FROM procedure_sections)::int AS sections,
                       (SELECT COUNT(*) FROM faq)::int AS faq,
-                      (SELECT COUNT(*) FROM faq WHERE status = 'ready')::int AS faq_ready
+                      (SELECT COUNT(*) FROM faq WHERE status = 'ready')::int AS faq_ready,
+                      (SELECT COUNT(*) FROM users)::int AS users_total,
+                      (SELECT COUNT(*) FROM users WHERE role = 'client')::int AS users_client,
+                      (SELECT COUNT(*) FROM chat_sessions)::int AS sessions_total,
+                      (
+                        SELECT COUNT(*) FROM chat_sessions
+                        WHERE (user_id IS NOT NULL AND updated_at >= NOW() - INTERVAL '10 minutes')
+                           OR (user_id IS NULL AND expires_at > NOW())
+                      )::int AS sessions_active,
+                      (
+                        SELECT COUNT(*) FROM chat_sessions
+                        WHERE user_id IS NULL
+                      )::int AS sessions_guest,
+                      (SELECT COUNT(*) FROM chat_messages)::int AS messages_total,
+                      (
+                        SELECT COUNT(*) FROM chat_messages
+                        WHERE role = 'user'
+                      )::int AS questions_total,
+                      (
+                        SELECT COUNT(*) FROM chat_messages
+                        WHERE role = 'user' AND created_at >= DATE_TRUNC('day', NOW())
+                      )::int AS questions_today,
+                      (
+                        SELECT COUNT(*) FROM audit_logs
+                        WHERE action = 'page_view'
+                      )::int AS visits_total,
+                      (
+                        SELECT COUNT(*) FROM audit_logs
+                        WHERE action = 'page_view'
+                          AND created_at >= DATE_TRUNC('day', NOW())
+                      )::int AS visits_today
                     """
                     )
                 )
@@ -125,6 +179,166 @@ def system_status() -> dict[str, Any]:
         services["qdrant"] = _fail(exc, collections={})
 
     return {"services": services}
+
+
+@router.get("/conversations")
+def list_conversations(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
+    """Log các cặp hỏi–đáp gần nhất cho tab Log hội thoại.
+
+    Mỗi dòng là một assistant message; câu hỏi lấy từ user message gần nhất
+    trong cùng session trước thời điểm trả lời.
+    """
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT
+                    m.id::text AS id,
+                    m.session_id::text AS session_id,
+                    m.created_at,
+                    m.content AS answer,
+                    m.metadata,
+                    s.title AS session_title,
+                    u.username,
+                    q.content AS question
+                  FROM chat_messages m
+                  JOIN chat_sessions s ON s.id = m.session_id
+                  LEFT JOIN users u ON u.id = s.user_id
+                  LEFT JOIN LATERAL (
+                      SELECT content
+                        FROM chat_messages
+                       WHERE session_id = m.session_id
+                         AND role = 'user'
+                         AND created_at <= m.created_at
+                       ORDER BY created_at DESC
+                       LIMIT 1
+                  ) q ON true
+                 WHERE m.role = 'assistant'
+                 ORDER BY m.created_at DESC
+                 LIMIT :limit
+                """
+            ),
+            {"limit": limit},
+        ).mappings().all()
+
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        metadata = row["metadata"] or {}
+        feedback = metadata.get("feedback") if isinstance(metadata, dict) else None
+        items.append(
+            {
+                "id": row["id"],
+                "session_id": row["session_id"],
+                "session_title": row["session_title"] or "Cuộc trò chuyện",
+                "user_name": row["username"] or "Khách",
+                "user_type": "auth" if row["username"] else "guest",
+                "question": row["question"] or "",
+                "answer": row["answer"] or "",
+                "created_at": row["created_at"].isoformat() if row["created_at"] else "",
+                "status": str(metadata.get("status") or ""),
+                "source": str(metadata.get("source") or ""),
+                "social_intent": str(metadata.get("social_intent") or ""),
+                "ttft_ms": metadata.get("ttft_ms"),
+                "total_ms": metadata.get("total_ms"),
+                "streamed": bool(metadata.get("streamed") or False),
+                "feedback": feedback if isinstance(feedback, dict) else None,
+            }
+        )
+    return {"items": items}
+
+
+@router.get("/conversations/{message_id}")
+def get_conversation(message_id: UUID) -> dict[str, Any]:
+    """Chi tiết một assistant message và các message cùng session."""
+    with engine.connect() as conn:
+        head = conn.execute(
+            text(
+                """
+                SELECT m.id::text AS id, m.session_id::text AS session_id,
+                       s.title AS session_title, u.username, m.created_at
+                  FROM chat_messages m
+                  JOIN chat_sessions s ON s.id = m.session_id
+                  LEFT JOIN users u ON u.id = s.user_id
+                 WHERE m.id = :message_id AND m.role = 'assistant'
+                """
+            ),
+            {"message_id": message_id},
+        ).mappings().first()
+        if head is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy hội thoại.")
+        messages = conn.execute(
+            text(
+                """
+                SELECT id::text, role, content, metadata, created_at
+                  FROM chat_messages
+                 WHERE session_id = :session_id
+                 ORDER BY created_at, id
+                """
+            ),
+            {"session_id": head["session_id"]},
+        ).mappings().all()
+
+    return {
+        "id": head["id"],
+        "session_id": head["session_id"],
+        "session_title": head["session_title"] or "Cuộc trò chuyện",
+        "user_name": head["username"] or "Khách",
+        "user_type": "auth" if head["username"] else "guest",
+        "created_at": head["created_at"].isoformat() if head["created_at"] else "",
+        "messages": [
+            {
+                "id": row["id"],
+                "role": row["role"],
+                "content": row["content"],
+                "metadata": row["metadata"] or {},
+                "created_at": row["created_at"].isoformat() if row["created_at"] else "",
+            }
+            for row in messages
+        ],
+    }
+
+
+@router.delete("/conversations/{message_id}")
+def delete_conversation(message_id: UUID, _admin: AdminUser) -> dict[str, Any]:
+    """Xoá cặp hỏi–đáp của một assistant message.
+
+    Chỉ xoá đúng một lượt: câu hỏi user gần nhất trước câu trả lời và câu trả lời đó.
+    Không xoá các lượt khác trong cùng phiên.
+    """
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                """
+                SELECT assistant_id, question_id
+                  FROM (
+                      SELECT m.id AS assistant_id,
+                             (
+                                 SELECT q.id
+                                   FROM chat_messages q
+                                  WHERE q.session_id = m.session_id
+                                    AND q.role = 'user'
+                                    AND q.created_at <= m.created_at
+                                  ORDER BY q.created_at DESC
+                                  LIMIT 1
+                             ) AS question_id
+                        FROM chat_messages m
+                       WHERE m.id = :message_id
+                         AND m.role = 'assistant'
+                  ) target
+                """
+            ),
+            {"message_id": message_id},
+        ).mappings().first()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy câu trả lời.")
+        ids = [row["assistant_id"]]
+        if row["question_id"] is not None:
+            ids.append(row["question_id"])
+        deleted = conn.execute(
+            text("DELETE FROM chat_messages WHERE id = ANY(:ids) RETURNING id"),
+            {"ids": ids},
+        ).all()
+    return {"deleted": len(deleted)}
 
 
 @router.get("/procedures")
@@ -208,81 +422,222 @@ def list_sections(code: str) -> dict[str, Any]:
     return {"items": [dict(row) for row in rows]}
 
 
-@router.get("/qa")
-def list_qa(procedure_code: str = "", limit: int = Query(default=100, le=500)) -> dict[str, Any]:
+class FaqPayload(BaseModel):
+    question: str = Field(min_length=1, max_length=1000)
+    answer: str = Field(min_length=1, max_length=20000)
+    intent: str = "general_info"
+    status: Literal["ready", "draft"] = "ready"
+    #: Không bắt buộc: FAQ chung có thể không gắn thủ tục.
+    procedure_code: str | None = Field(default=None, max_length=50)
+
+    @field_validator("question", "answer")
+    @classmethod
+    def clean_text(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Không được để trống.")
+        return cleaned
+
+    @field_validator("procedure_code")
+    @classmethod
+    def clean_procedure_code(cls, value: str | None) -> str | None:
+        cleaned = (value or "").strip()
+        return cleaned or None
+
+    @field_validator("intent")
+    @classmethod
+    def valid_intent(cls, value: str) -> str:
+        if value not in FAQ_INTENTS:
+            raise ValueError("Intent không hợp lệ.")
+        return value
+
+
+class FaqAdminResponse(BaseModel):
+    id: str
+    procedure_code: str | None = None
+    question: str
+    answer: str
+    intent: str
+    status: str
+    priority: int
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class FaqStatusPayload(BaseModel):
+    status: Literal["ready", "draft"]
+
+
+@router.get("/faq/intents")
+def admin_faq_intents() -> list[dict[str, str]]:
+    return [
+        {"value": value, "label": label}
+        for value, label in FAQ_INTENTS.items()
+    ]
+
+
+@router.get("/faq")
+def list_admin_faqs(
+    q: str = "",
+    intent: str = "",
+) -> dict[str, list[dict[str, Any]]]:
     sql = text(
         """
         SELECT
             faq_id::text AS id,
-            faq_id::text AS faq_id,
             procedure_code,
-            procedure_name,
-            domain_group,
-            source_field,
-            detail_url,
-            source_file,
             question,
             answer,
             intent,
-            source_section,
-            source_text,
-            tags,
-            confidence,
-            COALESCE(confidence, 0)::float AS score,
             status,
             priority,
-            hit_count,
-            last_used_at,
-            created_by,
-            reviewed_by,
-            created_at,
-            updated_at
+            created_at::text AS created_at,
+            updated_at::text AS updated_at
         FROM faq
-        WHERE (:procedure_code = '' OR procedure_code = :procedure_code)
-        ORDER BY priority DESC, confidence DESC NULLS LAST, created_at DESC
+        WHERE (:intent = '' OR intent = :intent)
+          AND (:q = '' OR question ILIKE '%' || :q || '%')
+        ORDER BY updated_at DESC
         """
     )
+
     with engine.connect() as conn:
-        rows = (
-            conn.execute(
-                sql,
-                {"procedure_code": procedure_code, "limit": limit},
-            )
-            .mappings()
-            .all()
-        )
+        rows = conn.execute(
+            sql,
+            {"q": q.strip(), "intent": intent.strip()},
+        ).mappings().all()
+
     return {"items": [dict(row) for row in rows]}
 
 
-@router.post("/qa/approve-all")
-def approve_all_qa(procedure_code: str = "") -> dict[str, Any]:
+@router.post("/faq", response_model=FaqAdminResponse)
+def create_admin_faq(payload: FaqPayload) -> dict[str, Any]:
     sql = text(
         """
-        UPDATE faq
-        SET status = 'ready',
-            reviewed_by = COALESCE(reviewed_by, 'admin')
-        WHERE status <> 'ready'
-          AND (:procedure_code = '' OR procedure_code = :procedure_code)
+        INSERT INTO faq (
+            procedure_code,
+            question,
+            answer,
+            intent,
+            status,
+            priority,
+            confidence,
+            created_by
+        ) VALUES (
+            :procedure_code,
+            :question,
+            :answer,
+            :intent,
+            :status,
+            0,
+            1.0,
+            'manual'
+        )
+        RETURNING
+            faq_id::text AS id,
+            procedure_code,
+            question,
+            answer,
+            intent,
+            status,
+            priority,
+            created_at::text AS created_at,
+            updated_at::text AS updated_at
         """
     )
+
     with engine.begin() as conn:
-        result = conn.execute(sql, {"procedure_code": procedure_code})
-    return {"updated": result.rowcount or 0}
+        row = conn.execute(sql, payload.model_dump()).mappings().one()
+
+    return dict(row)
 
 
-@router.post("/qa/{faq_id}/approve")
-def approve_qa(faq_id: str) -> dict[str, Any]:
+@router.patch("/faq/{faq_id}", response_model=FaqAdminResponse)
+def update_admin_faq(faq_id: UUID, payload: FaqPayload) -> dict[str, Any]:
     sql = text(
         """
         UPDATE faq
-        SET status = 'ready',
-            reviewed_by = COALESCE(reviewed_by, 'admin')
+        SET
+            procedure_code = :procedure_code,
+            question = :question,
+            answer = :answer,
+            intent = :intent,
+            status = :status,
+            updated_at = NOW()
         WHERE faq_id = :faq_id
+        RETURNING
+            faq_id::text AS id,
+            procedure_code,
+            question,
+            answer,
+            intent,
+            status,
+            priority,
+            created_at::text AS created_at,
+            updated_at::text AS updated_at
         """
     )
+
     with engine.begin() as conn:
-        result = conn.execute(sql, {"faq_id": faq_id})
-    return {"updated": result.rowcount or 0}
+        row = conn.execute(
+            sql,
+            {"faq_id": faq_id, **payload.model_dump()},
+        ).mappings().first()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy FAQ.")
+
+    return dict(row)
+
+
+@router.patch("/faq/{faq_id}/status", response_model=FaqAdminResponse)
+def update_admin_faq_status(
+    faq_id: UUID,
+    payload: FaqStatusPayload,
+) -> dict[str, Any]:
+    sql = text(
+        """
+        UPDATE faq
+        SET
+            status = :status,
+            updated_at = NOW()
+        WHERE faq_id = :faq_id
+        RETURNING
+            faq_id::text AS id,
+            procedure_code,
+            question,
+            answer,
+            intent,
+            status,
+            priority,
+            created_at::text AS created_at,
+            updated_at::text AS updated_at
+        """
+    )
+
+    with engine.begin() as conn:
+        row = conn.execute(
+            sql,
+            {"faq_id": faq_id, "status": payload.status},
+        ).mappings().first()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy FAQ.")
+
+    return dict(row)
+
+
+@router.delete("/faq/{faq_id}")
+def delete_admin_faq(faq_id: UUID) -> dict[str, int]:
+    with engine.begin() as conn:
+        result = conn.execute(
+            text("DELETE FROM faq WHERE faq_id = :faq_id"),
+            {"faq_id": faq_id},
+        )
+
+    if not result.rowcount:
+        raise HTTPException(status_code=404, detail="Không tìm thấy FAQ.")
+
+    return {"deleted": result.rowcount}
 
 
 @router.get("/graph/stats")
@@ -693,7 +1048,7 @@ class WorkflowAskRequest(BaseModel):
 
 
 @router.post("/workflow/ask")
-async def workflow_ask(payload: WorkflowAskRequest) -> dict[str, Any]:
+async def workflow_ask(payload: WorkflowAskRequest, admin: AdminUser) -> dict[str, Any]:
     """Chạy một câu hỏi qua **cả đồ thị** và trả bằng chứng tìm được.
 
     Đây là lối vào dùng chung với ``api/chat.py`` (cùng một hàm), nhờ vậy trang kiểm thử
@@ -702,6 +1057,7 @@ async def workflow_ask(payload: WorkflowAskRequest) -> dict[str, Any]:
     ⚠️ Mốc 1 **chưa sinh câu trả lời**: ``has_answer`` luôn là ``false``, ``outcome`` là
     *"tìm được bằng chứng"* chứ không phải *"đã trả lời"*.
     """
+    _enforce_llm_rate(admin)
     # Nạp trong hàm: ``workflow`` kéo theo ``langgraph`` và cả bốn động cơ truy xuất; trang
     # admin không cần chúng ở mọi lần gọi khác.
     from backend.app.rag import retrieval
@@ -713,7 +1069,10 @@ async def workflow_ask(payload: WorkflowAskRequest) -> dict[str, Any]:
 
 
 @router.post("/retrieval/test")
-async def retrieval_test(payload: RetrievalTestRequest) -> dict[str, Any]:
+async def retrieval_test(
+    payload: RetrievalTestRequest,
+    admin: AdminUser,
+) -> dict[str, Any]:
     """Chạy **một** chiến lược truy xuất trên câu hỏi admin nhập.
 
     Mỗi lần gọi chỉ chạy đúng chế độ trong ``payload.mode`` — không chạy lẫn các chế
@@ -722,6 +1081,7 @@ async def retrieval_test(payload: RetrievalTestRequest) -> dict[str, Any]:
     Trả **top-K kèm điểm** chứ không chỉ top-1: người tune ngưỡng cần thấy cả candidate
     dưới ngưỡng, để phân biệt "trượt vì 0,74" với "trượt vì 0,50".
     """
+    _enforce_llm_rate(admin)
     if payload.mode not in IMPLEMENTED_MODES:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -864,9 +1224,10 @@ async def retrieval_test(payload: RetrievalTestRequest) -> dict[str, Any]:
     try:
         vector = await embeddings.embed(payload.question)
     except Exception as exc:  # noqa: BLE001
+        logger.exception("Embedding failed during admin retrieval test")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Không gọi được API embedding: {exc}",
+            detail="Dịch vụ embedding tạm thời không khả dụng.",
         ) from exc
 
     if payload.mode == "vector":

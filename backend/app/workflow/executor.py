@@ -32,6 +32,7 @@ from backend.app.rag import (
     sections,
 )
 from backend.app.rag.evidence import from_chunks, from_fact, from_graph, from_sections
+from backend.app.workflow.case_resolver import filter_items, select_case
 from backend.app.workflow.planner import (
     REASON_AMBIGUOUS_SUBJECT,
     REASON_CONTEXT_REQUIRED,
@@ -71,6 +72,7 @@ class RequestCoverage:
     fallback_from: str = ""
     fallback_to: str = ""
     note: str = ""
+    merged_from: tuple[int, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -84,6 +86,8 @@ class RequestCoverage:
             data["fallback_to"] = self.fallback_to
         if self.note:
             data["note"] = self.note
+        if self.merged_from:
+            data["merged_from"] = list(self.merged_from)
         return data
 
 
@@ -198,12 +202,14 @@ async def _constraint_entity(
     return None, "không xác định được giá trị của điều kiện lọc"
 
 
-async def _run_section(task: Task) -> ToolResult:
+async def _run_section(task: Task, question: str) -> ToolResult:
     rows, error = await sections.theo_khia_canh_checked(
         list(task.procedure_codes), [task.facet]
     )
     if error:
         return ToolResult([], status=STATUS_FAILED, error=error)
+    if task.facet == "required_documents":
+        rows = filter_items(rows, select_case(question, rows))
     return ToolResult(from_sections(rows))
 
 
@@ -220,9 +226,29 @@ async def _run_graph(
     entity, loi_dieu_kien = await _constraint_entity(task)
     if task.constraints and entity is None:
         return ToolResult([], status=STATUS_UNSUPPORTED, error=loi_dieu_kien)
+    if entity is None and task.subject_kind in {
+        "agency",
+        "field",
+        "administrative_level",
+        "domain_group",
+    }:
+        kind_by_subject = {
+            "agency": "co_quan",
+            "field": "linh_vuc",
+            "administrative_level": "cap",
+            "domain_group": "domain_group",
+        }
+        entity = graph_query.EntityMatch(
+            kind=kind_by_subject[task.subject_kind],
+            value=task.subject_key,
+            label=task.subject_key,
+        )
+    document_subject = task.subject_kind in {"decision", "vocabulary"}
     evidence = await graph_query.answer(
         question,
         codes=list(task.procedure_codes) or None,
+        document_key=(task.subject_key or None) if document_subject else None,
+        document_kind=(task.subject_kind or None) if document_subject else None,
         requested_facets=[task.facet],
         get_vector=vector_source.get,
         entity=entity,
@@ -246,16 +272,21 @@ async def _run_graph(
 
 
 async def _run_hybrid(
-    task: Task, question: str, vector_source: _VectorSource
+    task: Task,
+    question: str,
+    vector_source: _VectorSource,
+    *,
+    keyword_question: str | None = None,
 ) -> ToolResult:
     vector = await vector_source.get()
-    outcome = await hybrid.hybrid(
-        question,
-        vector=vector,
-        codes=list(task.procedure_codes) or None,
-        # use_rerank=True,
-        use_gate=not task.procedure_codes,
-    )
+    kwargs: dict[str, Any] = {
+        "vector": vector,
+        "codes": list(task.procedure_codes) or None,
+        "use_gate": not task.procedure_codes,
+    }
+    if keyword_question:
+        kwargs["keyword_question"] = keyword_question
+    outcome = await hybrid.hybrid(question, **kwargs)
     items = filter_by_facet(from_chunks(outcome.candidates), task.facet)
     errors = list(getattr(outcome, "errors", None) or [])
     if not items and errors:
@@ -267,35 +298,58 @@ async def _run_hybrid(
 
 
 async def _run_once(
-    task: Task, question: str, vector_source: _VectorSource
+    task: Task,
+    question: str,
+    vector_source: _VectorSource,
+    *,
+    keyword_question: str | None = None,
 ) -> ToolResult:
     if task.tool == TOOL_SECTION:
-        return await _run_section(task)
+        return await _run_section(task, question)
     if task.tool == TOOL_FACT:
         return await _run_fact(task)
     if task.tool == TOOL_GRAPH:
         return await _run_graph(task, question, vector_source)
     if task.tool == TOOL_HYBRID:
+        if keyword_question:
+            return await _run_hybrid(
+                task,
+                question,
+                vector_source,
+                keyword_question=keyword_question,
+            )
         return await _run_hybrid(task, question, vector_source)
     raise ValueError(f"tool không hỗ trợ: {task.tool}")
 
 
 def _fallback_tool(task: Task) -> str:
     """The single fallback allowed per request (empty string = none)."""
+    if task.fallback_tool:
+        return task.fallback_tool
     if task.tool == TOOL_SECTION:
         return TOOL_HYBRID
-    if task.tool == TOOL_GRAPH and task.facet == "legal_basis":
-        return TOOL_SECTION
+    if task.tool == TOOL_GRAPH:
+        return TOOL_SECTION if task.facet == "legal_basis" else TOOL_HYBRID
     return ""
 
 
 async def _execute_task(
-    task: Task, question: str, vector_source: _VectorSource
+    task: Task,
+    question: str,
+    vector_source: _VectorSource,
+    *,
+    keyword_question: str | None = None,
 ) -> tuple[list[dict[str, Any]], RequestCoverage]:
     clarify: dict[str, Any] | None = None
     try:
         result = await asyncio.wait_for(
-            _run_once(task, question, vector_source), timeout=TASK_TIMEOUT_S
+            _run_once(
+                task,
+                question,
+                vector_source,
+                keyword_question=keyword_question,
+            ),
+            timeout=TASK_TIMEOUT_S,
         )
     except Exception as exc:  # noqa: BLE001 — một nguồn lỗi không làm mất nguồn khác
         logger.warning("Task %s (%s) lỗi: %s", task.request_index, task.tool, exc)
@@ -315,7 +369,11 @@ async def _execute_task(
             note = ""
 
     fallback = ""
-    if status in {STATUS_EMPTY, STATUS_FAILED}:
+    # Graph hạ tầng lỗi không được che bằng fallback: người dùng cần biết nguồn đang lỗi.
+    should_fallback = status == STATUS_EMPTY or (
+        status == STATUS_FAILED and task.tool != TOOL_GRAPH
+    )
+    if should_fallback:
         alt = _fallback_tool(task)
         if alt:
             alt_task = Task(
@@ -327,11 +385,19 @@ async def _execute_task(
                 expected_types=task.expected_types,
                 procedure_codes=task.procedure_codes,
                 subject_ref=task.subject_ref,
+                subject_key=task.subject_key,
+                subject_kind=task.subject_kind,
                 constraints=task.constraints,
             )
             try:
                 alt_result = await asyncio.wait_for(
-                    _run_once(alt_task, question, vector_source), timeout=TASK_TIMEOUT_S
+                    _run_once(
+                        alt_task,
+                        question,
+                        vector_source,
+                        keyword_question=keyword_question,
+                    ),
+                    timeout=TASK_TIMEOUT_S,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Fallback %s -> %s lỗi: %s", task.tool, alt, exc)
@@ -351,6 +417,7 @@ async def _execute_task(
         fallback_from=task.tool if fallback else "",
         fallback_to=fallback,
         note=note,
+        merged_from=tuple(task.merged_from),
     )
     if clarify is not None:
         coverage.note = str(clarify.get("question") or coverage.note)

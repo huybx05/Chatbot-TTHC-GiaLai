@@ -25,12 +25,12 @@ cao nên **SHA-256 là đủ** — không cần Argon2 (Argon2 chỉ cần khi �
 Nhưng vẫn phải băm: nếu CSDL bị lộ, kẻ tấn công không dùng được giá trị trong bảng
 `sessions` để đăng nhập.
 
-### 4. Xoay vòng refresh token theo "gia đình"
+### 4. Xoay vòng refresh token trên cùng phiên
 
-Mỗi lần làm mới, token cũ bị **thu hồi** và sinh token mới **cùng `family_id`**. Nếu một
-token **đã thu hồi** bị dùng lại, đó là dấu hiệu bị đánh cắp (kẻ tấn công và người dùng
-cùng giữ một token) → **thu hồi toàn bộ family**. Người dùng phải đăng nhập lại, nhưng
-kẻ tấn công cũng bị đẩy ra. Xem ``rotate_refresh_token``.
+Mỗi lần làm mới, hash token hiện tại được chuyển sang `previous_token_hash` và hash token mới
+được cập nhật ngay trên cùng dòng session. Nếu token ngay trước đó bị dùng lại, đó là dấu hiệu
+bị đánh cắp → **thu hồi toàn bộ family**. Người dùng phải đăng nhập lại, nhưng kẻ tấn công
+cũng bị đẩy ra. Xem ``rotate_refresh_token``.
 
 ## Cạm bẫy đã gặp
 
@@ -208,7 +208,6 @@ def issue_refresh_token(
     user_id: int,
     user_agent: str = "",
     ip_address: str | None = None,
-    family_id: uuid.UUID | None = None,
 ) -> str:
     """Sinh refresh token mới và ghi phiên vào bảng `sessions`. Trả token GỐC.
 
@@ -230,13 +229,21 @@ def issue_refresh_token(
         {
             "user_id": user_id,
             "token_hash": _bam_token(token),
-            "family_id": str(family_id or uuid.uuid4()),
+            "family_id": str(uuid.uuid4()),
             "user_agent": (user_agent or "")[:500],
             "ip_address": ip_address,
             "expires_at": expires_at,
         },
     )
     return token
+
+
+def mark_user_seen(conn, *, user_id: int) -> None:
+    """Ghi nhận lần gần nhất người dùng đã xác thực thành công."""
+    conn.execute(
+        text("UPDATE users SET last_seen_at = NOW() WHERE id = :user_id"),
+        {"user_id": user_id},
+    )
 
 
 def find_active_session(conn, token: str):
@@ -253,7 +260,7 @@ def find_active_session(conn, token: str):
     row = conn.execute(
         text(
             """
-            SELECT id, user_id, family_id, expires_at, revoked_at
+            SELECT id, user_id, family_id, token_hash, expires_at, revoked_at
               FROM sessions
              WHERE token_hash = :h
             """
@@ -262,8 +269,9 @@ def find_active_session(conn, token: str):
     ).first()
     if row is None:
         return None
-    # So lại bằng hàm hằng thời gian (phòng khi index trả về dòng gần đúng).
-    if not secrets.compare_digest(digest, digest):
+    # So lại bằng hàm hằng thời gian với giá trị THẬT SỰ đọc từ DB. Trước đây
+    # đoạn này so `digest` với chính nó nên luôn đúng và không có tác dụng.
+    if not secrets.compare_digest(digest, str(row.token_hash or "")):
         return None
     if row.revoked_at is not None:
         return None
@@ -290,41 +298,68 @@ def rotate_refresh_token(
     **an toàn hơn**: thu hồi **toàn bộ family** và bắt đăng nhập lại. Người dùng thật bị
     phiền một lần; kẻ tấn công mất quyền truy cập.
     """
-    digest = _bam_token(old_token)
+    token_moi = secrets.token_urlsafe(48)
     row = conn.execute(
         text(
-            "SELECT id, user_id, family_id, expires_at, revoked_at "
-            "  FROM sessions WHERE token_hash = :h"
+            """
+            UPDATE sessions
+               SET previous_token_hash = token_hash,
+                   token_hash = :new_token_hash,
+                   user_agent = :user_agent,
+                   ip_address = :ip_address,
+                   expires_at = :expires_at,
+                   last_used_at = NOW()
+             WHERE token_hash = :old_token_hash
+               AND user_id = :user_id
+               AND revoked_at IS NULL
+               AND expires_at > NOW()
+            RETURNING id
+            """
         ),
-        {"h": digest},
+        {
+            "new_token_hash": _bam_token(token_moi),
+            "old_token_hash": _bam_token(old_token),
+            "user_id": user_id,
+            "user_agent": (user_agent or "")[:500],
+            "ip_address": ip_address,
+            "expires_at": _now() + timedelta(days=settings.refresh_token_expire_days),
+        },
+    ).first()
+    if row is not None:
+        return token_moi
+
+    reused = find_reused_session(conn, old_token)
+    if reused is not None:
+        revoke_session_family(conn, str(reused.family_id))
+    return None
+
+
+def find_reused_session(conn, token: str):
+    """Tìm phiên đang sống mà refresh token ngay trước đó bị dùng lại."""
+    return conn.execute(
+        text(
+            """
+            SELECT id, user_id, family_id
+              FROM sessions
+             WHERE previous_token_hash = :h
+               AND revoked_at IS NULL
+               AND expires_at > NOW()
+            """
+        ),
+        {"h": _bam_token(token)},
     ).first()
 
-    if row is None:
-        return None
 
-    if row.revoked_at is not None:
-        # Dấu hiệu dùng lại token đã thu hồi → thu hồi cả family.
-        conn.execute(
-            text(
-                "UPDATE sessions SET revoked_at = NOW() "
-                " WHERE family_id = :f AND revoked_at IS NULL"
-            ),
-            {"f": str(row.family_id)},
-        )
-        return None
-
-    if row.expires_at <= _now() or row.user_id != user_id:
-        return None
-
-    # Thu hồi token cũ, phát token mới CÙNG family.
-    conn.execute(text("UPDATE sessions SET revoked_at = NOW() WHERE id = :i"), {"i": row.id})
-    return issue_refresh_token(
-        conn,
-        user_id=user_id,
-        user_agent=user_agent,
-        ip_address=ip_address,
-        family_id=row.family_id,
+def revoke_session_family(conn, family_id: str) -> int:
+    """Thu hồi mọi phiên thuộc một token family."""
+    result = conn.execute(
+        text(
+            "UPDATE sessions SET revoked_at = NOW() "
+            "WHERE family_id = :family_id AND revoked_at IS NULL"
+        ),
+        {"family_id": family_id},
     )
+    return int(result.rowcount or 0)
 
 
 def revoke_session(conn, token: str) -> bool:
@@ -353,6 +388,10 @@ def cleanup_expired_sessions(conn) -> int:
     Giữ lại 30 ngày sau khi hết hạn để còn đối chiếu khi điều tra sự cố.
     """
     result = conn.execute(
-        text("DELETE FROM sessions WHERE expires_at < NOW() - INTERVAL '30 days'")
+        text(
+            "DELETE FROM sessions "
+            "WHERE expires_at < NOW() - INTERVAL '30 days' "
+            "   OR revoked_at < NOW() - INTERVAL '30 days'"
+        )
     )
     return int(result.rowcount or 0)

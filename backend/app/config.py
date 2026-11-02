@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # ── 1. ỨNG DỤNG ──────────────────────────────────────────────────────────
     app_env: str = "development"
     debug: bool = False
+    #: Bật redirect HTTP -> HTTPS khi ứng dụng nhận trực tiếp request.
+    #: Khi chạy sau Cloudflare/Nginx, để ``False`` và redirect tại proxy.
+    force_https: bool = False
     log_level: str = "INFO"
     api_v1_prefix: str = "/api/v1"
     #: Nguồn được phép gọi API từ trình duyệt, phân tách bằng dấu phẩy.
@@ -53,6 +56,8 @@ class Settings(BaseSettings):
     cors_origins: str = (
         "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173"
     )
+    #: Host được phép gửi request. Bắt buộc đặt ở production.
+    allowed_hosts: str = ""
     secret_key: str = ""
     # ``data_root`` trỏ tới cây dữ liệu; dùng đường dẫn TƯƠNG ĐỐI để bản dump
     # chuyển được sang máy khác mà không phải sửa.
@@ -67,11 +72,57 @@ class Settings(BaseSettings):
     # an toàn và số lần phải làm mới.
     access_token_expire_minutes: int = 30
     # Refresh token dài hạn nhưng CÓ thu hồi được (bảng `sessions`).
-    refresh_token_expire_days: int = 7
+    refresh_token_expire_days: int = 30
     # Số lần đăng nhập sai liên tiếp trước khi khóa tài khoản tạm thời.
     max_failed_attempts: int = 5
     # Thời gian khóa sau khi vượt ngưỡng trên (phút).
     lockout_minutes: int = 15
+
+    # ── 1b. RATE LIMIT / PROXY ──────────────────────────────────────────────
+    #: Redis dùng cho rate limit. Để trống → fallback in-memory (1 process).
+    redis_url: str = ""
+    redis_password: str = ""
+    postgres_admin_password: str = ""
+    cloudflare_tunnel_token: str = ""
+    #: IP/CIDR của reverse proxy tin cậy. Chỉ các IP này mới được đọc
+    #: X-Forwarded-For/CF-Connecting-IP. Mặc định tin localhost (Nginx).
+    trusted_proxy_ips: str = "127.0.0.1,::1"
+    login_rate_limit_per_min: int = 10
+    register_rate_limit_per_min: int = 5
+    refresh_rate_limit_per_min: int = 30
+    chat_rate_limit_per_min: int = 10
+    admin_llm_rate_limit_per_min: int = 5
+
+    # ── 1c. SHORT-TERM MEMORY ───────────────────────────────────────────────
+    # Công tắc rollback: tắt là bỏ qua toàn bộ memory, giữ hành vi cũ.
+    memory_enabled: bool = True
+    # Phiên khách: cookie token, TTL trượt và dọn nền.
+    guest_session_ttl_seconds: int = 600
+    guest_cleanup_interval_seconds: int = 60
+    guest_cookie_name: str = "dsh_guest_token"
+    guest_cookie_secure: bool = False
+    # 3 cặp Q/A gần nhất = 6 message (user + assistant).
+    memory_recent_messages: int = 6
+    # Đủ 10 cặp chưa tóm tắt thì bắt đầu tóm tắt.
+    memory_summary_trigger_pairs: int = 10
+    # Giữ nguyên 2 cặp gần nhất; 8 cặp cũ còn lại được tóm tắt.
+    memory_summary_keep_pairs: int = 2
+    # Giới hạn tổng context memory và từng phần.
+    memory_max_chars: int = 7_000
+    memory_message_max_chars: int = 1_200
+    memory_summary_max_chars: int = 1_200
+
+    # ── 1d. MEMORY REWRITE ──────────────────────────────────────────────────
+    # Rewrite tách biệt trước parser/grounding; tắt để rollback.
+    memory_rewrite_enabled: bool = True
+    memory_rewrite_confidence_min: float = 0.70
+    memory_rewrite_max_chars: int = 600
+    memory_rewrite_timeout_s: float = 5.0
+    # Tối đa 2 lần GỌI, nhưng lần 2 chỉ khi lần 1 lỗi tạm thời.
+    memory_rewrite_max_attempts: int = 2
+    memory_rewrite_retry_delay_s: float = 2.5
+    memory_summary_timeout_s: float = 20.0
+    memory_summary_retry_delay_s: float = 2.5
 
     # ── 2. QWEN — ROUTER, EMBEDDING, RERANKER ────────────────────────────────
     qwen_base_url: str = ""
@@ -109,6 +160,10 @@ class Settings(BaseSettings):
     # 0,6219. Vì vậy cổng được **bỏ qua** khi đã định danh được thủ tục; xem
     # ``backend/app/rag/hybrid.py``.
     reranker_gate_min_score: float = 0.60
+    #: Khoảng cách tối thiểu giữa top-1/top-2 khi rerank tên thủ tục đang mơ hồ.
+    reranker_procedure_margin: float = 0.02
+    #: Điểm tối thiểu của rerank tên thủ tục; dưới ngưỡng thì hỏi lại thay vì đoán.
+    reranker_procedure_min_score: float = 0.62
     # Ngưỡng **LỌC TỪNG CHUNK** trong danh sách rerank — khác hẳn ngưỡng cổng ở trên.
     # Để **0,0** (không lọc). Đây là giá trị đúng gần như luôn luôn: khi lọc, chunk
     # đúng nhưng điểm thấp hơn ngưỡng sẽ bị **loại âm thầm** — đo được một câu hỏi hai
@@ -120,8 +175,8 @@ class Settings(BaseSettings):
     deepseek_base_url: str = ""
     deepseek_api_key: str = ""
     synthesizer_model_name: str = ""
-    synthesizer_temperature: float = 0.2
-    synthesizer_max_tokens: int = 2048
+    synthesizer_temperature: float = 0.3
+    synthesizer_max_tokens: int = 4096
 
     # ── 5. POSTGRESQL (SSOT) ─────────────────────────────────────────────────
     database_host: str = "localhost"
@@ -131,6 +186,15 @@ class Settings(BaseSettings):
     database_password: str = ""
     # Chuỗi gộp, tiện cho SQLAlchemy. Nếu có biến này thì nó thắng các biến rời.
     database_url: str = ""
+
+    # ── 5b. OBJECT STORAGE (SeaweedFS/S3/R2) ────────────────────────────────
+    # Lưu file mẫu (Word/PDF) bên ngoài PostgreSQL. Local dùng SeaweedFS;
+    # production đổi endpoint/bucket sang S3/R2 mà không sửa code.
+    s3_endpoint: str = "http://localhost:8333"
+    s3_bucket: str = "procedure-documents"
+    s3_access_key: str = "test"
+    s3_secret_key: str = "test"
+    s3_region: str = "ap-southeast-1"
 
     # ── 6. NEO4J ─────────────────────────────────────────────────────────────
     neo4j_url: str = "neo4j://127.0.0.1:7687"

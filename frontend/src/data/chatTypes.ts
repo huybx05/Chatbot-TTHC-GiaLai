@@ -22,6 +22,7 @@ export type AnswerBlock =
   | { kind: "strongParagraph"; label: string; text: string }
   | { kind: "ordered"; items: ListItem[] }
   | { kind: "unordered"; items: ListItem[] }
+  | { kind: "files"; items: ProcedureDocument[] }
   | { kind: "citation"; items: CitationItem[] };
 
 export interface CitationItem {
@@ -40,6 +41,8 @@ export interface UserMessage {
 
 export interface AssistantMessage {
   id: string;
+  /** ID message do backend trả về; dùng để gửi feedback. */
+  messageId?: string;
   role: "assistant";
   /** Tên hiển thị cạnh avatar. */
   author: string;
@@ -47,6 +50,9 @@ export interface AssistantMessage {
   authorNote?: string;
   icon: string;
   blocks: AnswerBlock[];
+  feedback?: "like" | "dislike" | null;
+  feedbackReasons?: string[];
+  feedbackComment?: string;
   /**
    * Giai đoạn đang chạy, hiện cạnh tên trợ lý.
    *
@@ -67,10 +73,28 @@ export interface Conversation {
   /** Đường dẫn điều hướng trong bản thiết kế gốc. */
   path: string;
   messages: ChatMessage[];
+  /** Số tin nhắn phía server; dùng khi chưa tải nội dung tin nhắn. */
+  messageCount?: number;
 }
 
 /** Icon dùng cho mục gợi ý và các widget nhỏ. */
 export interface SuggestedQuestion {
   id: string;
   text: string;
+}
+
+/** Dùng cho hiển thị mẫu hồ sơ để tải    */
+export interface ProcedureDocument {
+  id: string;
+  document_name: string;
+  file_name: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  download_url: string;
+  case_order?: number;
+  component_index?: number;
+  case_orders?: number[];
+  component_indexes?: number[];
+  file_id?: string | null;
+  file_ids?: string[];
 }

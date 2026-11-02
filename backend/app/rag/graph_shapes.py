@@ -41,6 +41,7 @@ LABELS: frozenset[str] = frozenset(
         "TrangThai",
         "DoiTuong",
         "KetQua",
+        "QuyetDinh",
     }
 )
 
@@ -57,6 +58,7 @@ EDGES: frozenset[str] = frozenset(
         "TRANG_THAI",
         "DOI_TUONG_THUC_HIEN",
         "KET_QUA_XU_LY",
+        "CO_QUYET_DINH",
     }
 )
 
@@ -336,6 +338,18 @@ SHAPES: dict[str, Shape] = {
         ),
         order_by="ma_thu_tuc",
     ),
+    "PROCEDURES_BY_DECISION": Shape(
+        kind=REVERSE,
+        steps=(Step(rels=("CO_QUYET_DINH",), label="QuyetDinh"),),
+        filter=Filter(prop="key"),
+        filter_param="doc_key",
+        returns=(
+            ("ma_thu_tuc", "p.key"),
+            ("ten", "p.ten"),
+            ("detail_url", "p.detail_url"),
+        ),
+        order_by="ma_thu_tuc",
+    ),
     # ``CoQuan`` dùng ``contains`` vì tên bị nhồi: 21/33 cạnh CO_THAM_QUYEN trỏ tới
     # chuỗi 25 chi nhánh nối bằng ", ".
     "PROCEDURES_BY_AGENCY": Shape(
@@ -351,6 +365,7 @@ SHAPES: dict[str, Shape] = {
             # quan cụ thể không được nêu" trong khi chính câu hỏi đã nêu.
             ("co_quan", "x.name"),
             ("vai_tro", "collect(DISTINCT type(e1))"),
+            ("detail_url", "p.detail_url"),
         ),
         order_by="ma_thu_tuc",
         count_total=True,
@@ -365,6 +380,7 @@ SHAPES: dict[str, Shape] = {
             ("ma_thu_tuc", "p.key"),
             ("ten", "p.ten"),
             ("cap", "x.name"),
+            ("detail_url", "p.detail_url"),
         ),
         order_by="ma_thu_tuc",
         count_total=True,
@@ -378,6 +394,7 @@ SHAPES: dict[str, Shape] = {
             ("ma_thu_tuc", "p.key"),
             ("ten", "p.ten"),
             ("linh_vuc", "x.name"),
+            ("detail_url", "p.detail_url"),
         ),
         order_by="ma_thu_tuc",
         count_total=True,
@@ -391,6 +408,7 @@ SHAPES: dict[str, Shape] = {
             ("ma_thu_tuc", "p.key"),
             ("ten", "p.ten"),
             ("nhom", "x.name"),
+            ("detail_url", "p.detail_url"),
         ),
         order_by="ma_thu_tuc",
         count_total=True,

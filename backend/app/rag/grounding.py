@@ -22,7 +22,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from backend.app.rag import disambiguation, graph_query, resolver, theme_agreement
+from backend.app.config import settings
+from backend.app.rag import (
+    disambiguation,
+    fact_lookup,
+    graph_query,
+    reranker,
+    resolver,
+    theme_agreement,
+)
+from backend.app.text_norm import strip_accents
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids an import cycle
     from backend.app.rag.resolve import Resolution
@@ -129,10 +138,62 @@ def _alternatives(rows: list[tuple[str, str, float]]) -> list[dict[str, Any]]:
     ]
 
 
+def _phrase_score(mention: str, name: str) -> int:
+    """Điểm khớp cụm liên tiếp giữa mention và tên ứng viên.
+
+    Chỉ dùng tín hiệu từ vựng, không có danh sách từ khóa nghiệp vụ. Mục đích là
+    ưu tiên tên chứa đúng cụm người dùng nêu khi vector xếp hạng sai.
+    """
+    mention_words = strip_accents(mention).lower().replace(",", " ").split()
+    name_words = strip_accents(name).lower().replace(",", " ").split()
+    best = 0
+    for size in range(2, min(5, len(mention_words) + 1)):
+        for start in range(len(mention_words) - size + 1):
+            phrase = mention_words[start : start + size]
+            for index in range(len(name_words) - size + 1):
+                if name_words[index : index + size] == phrase:
+                    best = max(best, size)
+    return best
+
+
+def _best_candidate(
+    mention: str, candidates: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    if not candidates:
+        return None
+    top = max(candidates, key=lambda item: float(item.get("score") or 0.0))
+    top_phrase = _phrase_score(mention, str(top.get("name") or ""))
+    best = top
+    best_phrase = top_phrase
+    for item in candidates:
+        phrase = _phrase_score(mention, str(item.get("name") or ""))
+        if phrase > best_phrase and float(item.get("score") or 0.0) >= (
+            float(top.get("score") or 0.0) - 0.10
+        ):
+            best = item
+            best_phrase = phrase
+    return best if best_phrase >= 2 else None
+
+
 async def _ground_procedure(
     index: int, text: str, resolution: Resolution, memo: _MemoVector
 ) -> SubjectGrounding:
     """Procedure mention: code first, then the existing resolver (exact name, then vector)."""
+    # Parser đôi khi gọi "Quyết định số ..." là procedure. Nếu số hiệu khớp
+    # QuyetDinh trong đồ thị thì phải chuyển sang subject document/decision.
+    try:
+        if graph_query.document_numbers(text):
+            vocab = await graph_query.vocabulary()
+            decision = graph_query.match_decisions(text, vocab)
+            if decision.unique is not None:
+                return SubjectGrounding(
+                    index=index, status="resolved", type="decision", mention=text,
+                    code=decision.unique.key, name=decision.unique.name,
+                    method="decision", score=1.0,
+                )
+    except Exception as exc:  # noqa: BLE001 — graph không sẵn sàng không chặn resolver
+        logger.debug("Không kiểm tra được quyết định cho %r: %s", text, exc)
+
     verified = {str(code): code for code in (resolution.codes or [])}
     mentioned_codes = [code.replace(",", ".") for code in CODE_PATTERN.findall(text)]
 
@@ -143,6 +204,24 @@ async def _ground_procedure(
                 index=index, status="resolved", type="procedure", mention=text,
                 code=code, method="code", score=1.0,
             )
+
+    # Người dùng hay gõ mã không dấu chấm: "1 013225", "1013225".
+    # fact_lookup đã chuẩn hoá đúng các dạng này; dùng nó trước resolver vector
+    # để không rơi xuống tìm kiếm mờ rồi báo ngoài phạm vi.
+    lookup = await fact_lookup.resolve_codes(text)
+    if lookup.matched:
+        code = lookup.matched[0]
+        name = (await resolver.procedure_names()).get(code, "")
+        return SubjectGrounding(
+            index=index, status="resolved", type="procedure", mention=text,
+            code=code, name=name, method="code", score=1.0,
+        )
+    if lookup.not_found and not lookup.error:
+        asked = list(resolution.asked_codes or lookup.not_found)
+        return SubjectGrounding(
+            index=index, status="not_found", type="procedure", mention=text,
+            method="code", note="mã không tồn tại: " + ", ".join(asked),
+        )
 
     # ② a code the user typed that does not exist — must not be replaced by a similar procedure
     if mentioned_codes:
@@ -161,7 +240,11 @@ async def _ground_procedure(
 
     # The parser mention is an identity hint, not a replacement for the user's case details.
     # Resolve against the whole turn so the vector search can distinguish similar procedures.
-    target = resolution.question or text
+    target = text.strip()
+    if len(target.split()) < 3:
+        # Mention quá ngắn (ví dụ "sang tên") không đủ ngữ cảnh; dùng câu hỏi.
+        target = resolution.question or target
+    target = target or text
     try:
         found = await resolver.resolve_procedure(target, codes=None, get_vector=memo.get)
     except Exception as exc:  # noqa: BLE001 — grounding failure must not break the turn
@@ -176,18 +259,66 @@ async def _ground_procedure(
         for code, name, score in (found.candidates or [])
     ]
     if found.code and not found.ambiguous:
+        chosen = _best_candidate(text, candidate_rows)
+        if chosen is not None and chosen.get("code") != found.code:
+            return SubjectGrounding(
+                index=index, status="resolved", type="procedure", mention=text,
+                code=str(chosen["code"]), name=str(chosen["name"]),
+                method="rerank", score=float(chosen.get("score") or 0.0),
+                candidates=candidate_rows,
+            )
+        method = found.method or "vector"
+        if (
+            method == "vector"
+            and len(text.split()) >= 6
+            and text.strip() != str(resolution.question or "").strip()
+        ):
+            method = "mention_vector"
         return SubjectGrounding(
             index=index, status="resolved", type="procedure", mention=text,
-            code=found.code, name=found.name, method=found.method or "vector",
+            code=found.code, name=found.name, method=method,
             score=float(found.confidence or 0.0), candidates=candidate_rows,
         )
     if found.ambiguous and found.alternatives:
+        alternatives = list(found.alternatives)
+        scores = await reranker.rerank_procedure_names(
+            resolution.question or text,
+            alternatives,
+        )
+        if scores:
+            ranked = sorted(
+                alternatives,
+                key=lambda item: scores.get(item[0], 0.0),
+                reverse=True,
+            )
+            top_code, top_name, _ = ranked[0]
+            top_score = scores.get(top_code, 0.0)
+            second_score = scores.get(ranked[1][0], 0.0) if len(ranked) > 1 else 0.0
+            if (
+                top_score >= settings.reranker_procedure_min_score
+                and top_score - second_score >= settings.reranker_procedure_margin
+            ):
+                return SubjectGrounding(
+                    index=index, status="resolved", type="procedure", mention=text,
+                    code=top_code, name=top_name, method="rerank",
+                    score=top_score, alternatives=_alternatives(ranked),
+                    candidates=candidate_rows,
+                    note="rerank chọn thủ tục đúng trong nhóm mơ hồ",
+                )
+            alternatives = ranked
+            note = (
+                f"rerank chưa đủ chắc chắn "
+                f"({top_score:.3f} < {settings.reranker_procedure_min_score:.3f})"
+            )
+        else:
+            note = found.note
         return SubjectGrounding(
             index=index, status="ambiguous", type="procedure", mention=text,
-            method=found.method or "vector", score=float(found.confidence or 0.0),
-            alternatives=_alternatives(list(found.alternatives)),
+            method="rerank" if scores else (found.method or "vector"),
+            score=float(found.confidence or 0.0),
+            alternatives=_alternatives(alternatives),
             candidates=candidate_rows,
-            note=found.note,
+            note=note,
         )
     return SubjectGrounding(
         index=index, status="not_found", type="procedure", mention=text,
@@ -196,6 +327,13 @@ async def _ground_procedure(
 
 
 def _ground_document(index: int, text: str, vocab: graph_query.Vocabulary) -> SubjectGrounding:
+    decision = graph_query.match_decisions(text, vocab)
+    if decision.unique is not None:
+        return SubjectGrounding(
+            index=index, status="resolved", type="decision", mention=text,
+            code=decision.unique.key, name=decision.unique.name,
+            method="decision", score=1.0,
+        )
     matched = graph_query.match_documents(text, vocab)
     if matched.unique is not None:
         return SubjectGrounding(
@@ -227,6 +365,13 @@ def _ground_entity(
         if matched.kind == expected_kind:
             return SubjectGrounding(
                 index=index, status="resolved", type=mention_type, mention=text,
+                code=matched.value, name=matched.label, method="vocabulary", score=1.0,
+            )
+        # "Hộ tịch" có thể được parser gọi là domain_group nhưng từ điển chỉ có
+        # LinhVuc; dùng nhãn field để planner chọn PROCEDURES_BY_FIELD.
+        if expected_kind == "domain_group" and matched.kind == "linh_vuc":
+            return SubjectGrounding(
+                index=index, status="resolved", type="field", mention=text,
                 code=matched.value, name=matched.label, method="vocabulary", score=1.0,
             )
         return SubjectGrounding(
@@ -364,6 +509,9 @@ async def ground_frame(
         try:
             if mention_type == "procedure":
                 item = await _ground_procedure(index, text, resolution, memo)
+            elif mention_type == "decision":
+                item = _ground_document(index, text, await _vocabulary())
+                item.type = "decision"
             elif mention_type == "document":
                 item = _ground_document(index, text, await _vocabulary())
                 if item.status == "not_found":

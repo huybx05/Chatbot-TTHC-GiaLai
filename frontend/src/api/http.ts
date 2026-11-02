@@ -1,5 +1,6 @@
 import { API_BASE_URL, REQUEST_TIMEOUT_MS } from "./config";
 
+
 /** Lỗi HTTP đã chuẩn hóa để UI không phải đọc chi tiết kỹ thuật. */
 export class ApiError extends Error {
   constructor(
@@ -11,7 +12,7 @@ export class ApiError extends Error {
   }
 }
 
-type HttpMethod = "GET" | "POST" | "PATCH";
+type HttpMethod = "GET" | "POST" | "PATCH" | "DELETE";
 
 export async function request<T>(
   path: string,
@@ -23,7 +24,10 @@ export async function request<T>(
   try {
     const response = await fetch(`${API_BASE_URL}${path}`, {
       method: init.method ?? "GET",
-      headers: init.body === undefined ? undefined : { "Content-Type": "application/json" },
+      credentials: "include",
+      headers: {
+        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       signal: controller.signal,
     });

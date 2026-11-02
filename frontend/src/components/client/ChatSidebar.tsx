@@ -1,3 +1,5 @@
+import { PanelLeft } from "lucide-react";
+
 import type { Conversation } from "../../data/chatTypes";
 import ConversationItem from "./ConversationItem";
 
@@ -8,7 +10,9 @@ interface ChatSidebarProps {
   /** Id của cuộc trò chuyện đang mở menu ba chấm. */
   menuForId: string | null;
   mobileOpen: boolean;
+  collapsed: boolean;
   onClose: () => void;
+  onToggleCollapsed: () => void;
   onSelect: (id: string) => void;
   onNewConversation: () => void;
   onTogglePin: (id: string) => void;
@@ -26,7 +30,9 @@ export default function ChatSidebar({
   activeId,
   menuForId,
   mobileOpen,
+  collapsed,
   onClose,
+  onToggleCollapsed,
   onSelect,
   onNewConversation,
   onTogglePin,
@@ -50,8 +56,9 @@ export default function ChatSidebar({
 
       <aside
         className={[
-          "fixed left-0 top-0 z-50 flex h-full w-[260px] flex-col justify-between overflow-y-auto border-r border-border-color bg-sidebar-bg p-4 shadow-[1px_0_6px_rgba(0,0,0,0.02)] transition-transform duration-200 md:translate-x-0 md:overflow-visible",
+          "fixed left-0 top-0 z-50 flex h-full w-[260px] flex-col justify-between overflow-y-auto border-r border-border-color bg-sidebar-bg p-4 shadow-[1px_0_6px_rgba(0,0,0,0.02)] transition-transform duration-200 md:overflow-visible",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
+          collapsed ? "md:-translate-x-full" : "md:translate-x-0",
         ].join(" ")}
       >
         <div className="flex flex-col gap-4">
@@ -67,6 +74,14 @@ export default function ChatSidebar({
               </span>
               {/* <span className="truncate text-[12px] text-text-secondary">Hỗ trợ tra cứu các TTHC tỉnh Gia Lai</span> */}
             </div>
+            <button
+              type="button"
+              aria-label="Thu gọn danh mục"
+              onClick={onToggleCollapsed}
+              className="ml-auto hidden rounded-lg p-2 text-text-secondary transition-colors hover:bg-white hover:text-text-primary md:inline-flex"
+            >
+              <PanelLeft aria-hidden="true" size={20} strokeWidth={2} />
+            </button>
           </div>
 
           <button

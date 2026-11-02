@@ -211,9 +211,9 @@ export default function GraphPage() {
   return (
     <>
       <PageHeader
-        eyebrow="Neo4j Graph"
-        title="Trực quan hóa CSDL đồ thị của hệ thống"
-        description="Mặc định hiển thị toàn bộ graph. Nhập mã thủ tục rồi tìm kiếm nếu chỉ muốn xem một thủ tục cụ thể."
+        eyebrow="	ĐỒ THỊ TRI THỨC"
+        title="Trực quan hóa đồ thị tri thức"
+        description="Mặc định hiển thị toàn bộ đồ thị. Nhập mã thủ tục để xem các mối liên kết liên quan đến thủ tục cụ thể."
       />
 
       {error ? (
@@ -223,10 +223,10 @@ export default function GraphPage() {
       ) : null}
 
       <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-        <MetricCard icon="hub" label="Graph status" value="Ready" note={mode} tone="ok" />
-        <MetricCard icon="account_tree" label="Loại relationship" value={String(stats.relationships.length)} note="Theo dữ liệu hiện có" tone="info" />
-        <MetricCard icon="database" label="Loại node" value={String(stats.nodes.length)} note="Nhãn trong graph" tone="info" />
-        <MetricCard icon="share" label="Đang hiển thị" value={`${nodes.length}/${edges.length}`} note="node / relationship" tone="info" />
+        <MetricCard label="Trạng thái đồ thị" value="Sẵn sàng" note={mode} />
+        <MetricCard label="Loại quan hệ" value={String(stats.relationships.length)} note="Các loại quan hệ trong đồ thị" />
+        <MetricCard label="Loại nút" value={String(stats.nodes.length)} note="Các loại nút trong đồ thị" />
+        <MetricCard label="Đang hiển thị" value={`${nodes.length}/${edges.length}`} note="nút / quan hệ" />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -242,7 +242,7 @@ export default function GraphPage() {
               Tìm kiếm thủ tục
             </button>
             <button className="rounded-lg border border-border-color bg-secondary-surface px-4 py-2 text-sm font-bold text-text-secondary" type="button" onClick={loadFullGraph}>
-              Toàn bộ graph
+              Toàn bộ đồ thị
             </button>
           </div>
           <div
@@ -291,7 +291,7 @@ export default function GraphPage() {
 
                 const label = shortLabel(item);
                 const fontSize = isProcedure ? 11 / globalScale : 9 / globalScale;
-                ctx.font = `700 ${fontSize}px Inter, Arial, sans-serif`;
+                ctx.font = `700 ${fontSize}px "Inter", Arial, sans-serif`;
                 ctx.textAlign = "center";
                 ctx.textBaseline = "top";
 
@@ -317,7 +317,7 @@ export default function GraphPage() {
 
                 if (isProcedure) {
                   const label = shortLabel(item);
-                  ctx.font = "700 11px Inter, Arial, sans-serif";
+                  ctx.font = '700 11px "Inter", Arial, sans-serif';
                   const textWidth = ctx.measureText(label).width;
                   ctx.fillRect(x - textWidth / 2 - 6, y + 6, textWidth + 12, 18);
                 }
@@ -367,7 +367,7 @@ export default function GraphPage() {
                 ctx.save();
                 ctx.translate(midX, midY);
                 ctx.rotate(angle);
-                ctx.font = `600 ${fontSize}px Inter, Arial, sans-serif`;
+                ctx.font = `600 ${fontSize}px "Inter", Arial, sans-serif`;
                 ctx.textAlign = "center";
                 ctx.textBaseline = "middle";
 
@@ -409,8 +409,8 @@ export default function GraphPage() {
         <div className="space-y-4">
           <Card>
             <SectionTitle
-              title={`Các thủ tục trên đồ thị (${procedureNodes.length})`}
-              note="Bấm để chọn — chắc chắn hơn bấm vào chấm trên canvas."
+              title={`Danh sách thủ tục (${procedureNodes.length})`}
+              note="Chọn một thủ tục để xem vị trí và các mối liên kết trên đồ thị."
             />
             <div className="max-h-64 space-y-2 overflow-auto">
               {procedureNodes.map((item) => (
@@ -435,7 +435,7 @@ export default function GraphPage() {
           </Card>
 
           <Card>
-            <SectionTitle title="Node đang chọn" note="Bấm vào một Node trong graph để xem chi tiết." />
+            <SectionTitle title="Nút đang chọn" note="Bấm vào một Node trong graph để xem chi tiết." />
             {selected ? (
               <div className="space-y-3">
                 <div className="rounded-lg border border-border-color bg-secondary-surface p-3">
@@ -460,12 +460,12 @@ export default function GraphPage() {
                 </div>
               </div>
             ) : (
-              <p className="text-sm text-text-secondary">Chưa chọn node.</p>
+              <p className="text-sm text-text-secondary">	Chưa có nút nào được chọn.</p>
             )}
           </Card>
 
           <Card>
-            <SectionTitle title="Thống kê node" />
+            <SectionTitle title="Thống kê các nút" />
             <div className="space-y-2">
               {stats.nodes.map((item) => (
                 <div key={item.label} className="flex items-center justify-between rounded-lg border border-border-color bg-secondary-surface p-3">
@@ -477,7 +477,7 @@ export default function GraphPage() {
           </Card>
 
           <Card>
-            <SectionTitle title="Relationship chính" note="Đọc trực tiếp từ Neo4j." />
+            <SectionTitle title="Các quan hệ chính" note="Dữ liệu được thống kê từ đồ thị tri thức." />
             <div className="space-y-2">
               {stats.relationships.map((item) => (
                 <div key={item.type} className="rounded-lg border border-border-color p-3">

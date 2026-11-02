@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from backend.app.memory.types import SessionMemory
 from backend.app.workflow.run import RunResult, ask, tom_tat
 
 __all__ = ["retrieve", "retrieve_full", "RunResult", "ask", "tom_tat"]
@@ -44,18 +45,26 @@ __all__ = ["retrieve", "retrieve_full", "RunResult", "ask", "tom_tat"]
 async def retrieve(
     question: str,
     *,
+    original_question: str | None = None,
+    memory_anchor: dict[str, Any] | None = None,
+    rewrite: dict[str, Any] | None = None,
     turn_index: int = 1,
     generate: bool = True,
     log_trace: bool = True,
     source: str = "api",
+    memory: SessionMemory | None = None,
 ) -> dict[str, Any]:
     """Trả lời một câu hỏi, dạng **từ điển** để API gửi thẳng ra ngoài."""
     ket_qua = await ask(
         question,
+        original_question=original_question,
+        memory_anchor=memory_anchor,
+        rewrite=rewrite,
         turn_index=turn_index,
         generate=generate,
         log_trace=log_trace,
         source=source,
+        memory=memory,
     )
     return ket_qua.to_dict()
 

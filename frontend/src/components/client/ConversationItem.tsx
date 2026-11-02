@@ -24,21 +24,23 @@ export default function ConversationItem({
   return (
     <div
       className={[
-        "group relative flex items-center justify-between rounded-lg px-2.5 py-2 transition-all",
+        "group relative flex items-center justify-between rounded-lg px-2.5 py-2 transition-colors",
         isActive
-          ? "border border-border-color bg-hover-item font-medium text-text-primary"
+          ? "border border-primary/40 bg-primary-soft font-semibold text-primary"
           : "text-text-secondary hover:bg-hover-item hover:text-text-primary",
       ].join(" ")}
     >
       <button
         type="button"
         onClick={() => onSelect(id)}
-        className="flex min-w-0 flex-1 items-center gap-2 text-left"
-      >
-        <span className="truncate text-[13.5px]">{title}</span>
-      </button>
+        aria-label={`Mở ${title}`}
+        className="absolute inset-0 rounded-lg border-0 outline-none focus:outline-none focus:ring-0 focus-visible:ring-2 focus-visible:ring-primary/40"
+      />
+      <span className="pointer-events-none relative z-10 min-w-0 flex-1 truncate text-[13.5px]">
+        {title}
+      </span>
 
-      <div className="ml-2 flex shrink-0 items-center gap-0.5">
+      <div className="relative z-10 ml-2 flex shrink-0 items-center gap-0.5">
         <button
           type="button"
           title={pinned ? "Bỏ ghim" : "Ghim"}
@@ -50,7 +52,7 @@ export default function ConversationItem({
             pinned ? "text-primary" : "text-text-secondary",
           ].join(" ")}
         >
-          push_pin
+          {pinned ? "keep_off" : "push_pin"}
         </button>
         <button
           type="button"

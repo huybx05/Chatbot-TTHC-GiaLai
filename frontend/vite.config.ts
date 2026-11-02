@@ -8,7 +8,7 @@ import { defineConfig } from "vite";
  * Lưu ý: KHÔNG đưa "/admin" vào đây. "/admin" là route giao diện phía frontend;
  * API monitoring nằm dưới "/api/admin" để hai bên không đụng nhau.
  */
-const API_PREFIXES = ["/chat", "/search", "/procedures", "/api/admin", "/health"];
+const API_PREFIXES = ["/chat", "/search", "/procedures", "/api/v1", "/api/admin", "/health"];
 
 const BACKEND_TARGET = "http://127.0.0.1:8000";
 

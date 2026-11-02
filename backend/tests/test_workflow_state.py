@@ -31,6 +31,11 @@ from backend.app.workflow.state import (
 TRUONG_MONG_DOI = {
     # câu hỏi
     "question",
+    "original_question",
+    "retrieval_question",
+    "memory_anchor",
+    "rewrite",
+    "memory",
     "normalized_question",
     "turn_index",
     # định danh
@@ -44,7 +49,6 @@ TRUONG_MONG_DOI = {
     "groundings",
     "plan",
     "coverage",
-    "discovery",
     "plan_class",
     "plan_class_reason",
     "request_plan_class",
@@ -52,6 +56,9 @@ TRUONG_MONG_DOI = {
     "thieu",
     "skip_generate",
     "resolution",
+    "candidate_procedures",
+    "grounded_procedure",
+    "answered_procedure",
     "vector_hash",
     # truy xuất
     "evidence",

@@ -150,28 +150,21 @@ export function Card({ children, className = "" }: { children: ReactNode; classN
 }
 
 export function MetricCard({
-  icon,
   label,
   value,
   note,
-  tone = "info",
 }: {
-  icon: string;
   label: string;
   value: string;
   note: string;
-  tone?: BadgeTone;
 }) {
   return (
     <Card>
-      <div className="flex items-start justify-between gap-3">
+      <div>
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">{label}</p>
           <p className="mt-2 text-2xl font-bold">{value}</p>
           <p className="mt-1 text-sm text-text-secondary">{note}</p>
-        </div>
-        <div className={`flex size-10 items-center justify-center rounded-lg border ${toneClass(tone)}`}>
-          <Icon name={icon} />
         </div>
       </div>
     </Card>

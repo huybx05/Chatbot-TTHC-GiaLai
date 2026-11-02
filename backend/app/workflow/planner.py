@@ -31,6 +31,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from backend.app.rag.graph_capabilities import (
+    ENTITY_TO_FACET,
+    FORWARD_CAPABILITY,
+    REVERSE_CAPABILITY,
+    Capability,
+)
 from backend.app.rag.grounding import SubjectGrounding
 from backend.app.workflow.question_frame import Facet, QuestionScope, RequestOperation
 
@@ -49,17 +55,17 @@ SECTION_FACETS = frozenset(
         Facet.REQUIRED_DOCUMENTS.value,
         Facet.STEPS.value,
         Facet.SUBMISSION_METHOD.value,
+        Facet.RECEIVING_AGENCY.value,
         Facet.PROCESSING_TIME.value,
         Facet.FEE.value,
         Facet.RESULT.value,
+        Facet.RESULT_DELIVERY.value,
         Facet.REQUIREMENTS.value,
     }
 )
 
 AGGREGATE_OPERATIONS = frozenset({RequestOperation.LIST.value, RequestOperation.COUNT.value})
-UNSUPPORTED_OPERATIONS = frozenset(
-    {RequestOperation.COMPARE.value, RequestOperation.RANK.value}
-)
+UNSUPPORTED_OPERATIONS = frozenset({RequestOperation.RANK.value})
 UNSUPPORTED_FACETS = frozenset({Facet.RELATED_PROCEDURES.value, Facet.UNKNOWN.value})
 
 #: Constraints the reverse Graph templates can filter on (``Shape.filter_param``).
@@ -73,40 +79,7 @@ REASON_MISSING_SUBJECT = "MISSING_SUBJECT"
 REASON_AMBIGUOUS_SUBJECT = "AMBIGUOUS_SUBJECT"
 REASON_UNRESOLVED_SUBJECT = "UNRESOLVED_SUBJECT"
 REASON_CONTEXT_REQUIRED = "CONTEXT_REQUIRED"
-
-
-@dataclass(frozen=True, slots=True)
-class Capability:
-    """A template the planner is allowed to use for one facet."""
-
-    intent: str
-    expected_types: tuple[str, ...] = ()
-
-
-#: Forward templates: the procedure code is known, the answer is about that procedure.
-FORWARD_CAPABILITY: dict[str, Capability] = {
-    Facet.ISSUING_AGENCY.value: Capability("AGENCY", ("BAN_HANH_BOI",)),
-    Facet.IMPLEMENTING_AGENCY.value: Capability("AGENCY", ("CO_THAM_QUYEN",)),
-    Facet.COORDINATING_AGENCY.value: Capability("AGENCY", ("PHOI_HOP",)),
-    Facet.AUTHORIZED_AGENCY.value: Capability("AGENCY", ("DUOC_UY_QUYEN",)),
-    Facet.ADMINISTRATIVE_LEVEL.value: Capability("CLASSIFY", ("CAP_THUC_HIEN",)),
-    Facet.FIELD.value: Capability("CLASSIFY", ("LINH_VUC",)),
-    Facet.DOMAIN_GROUP.value: Capability("CLASSIFY", ("DOMAIN_GROUP",)),
-    Facet.STATUS.value: Capability("CLASSIFY", ("TRANG_THAI",)),
-    Facet.TARGET_AUDIENCE.value: Capability("AUDIENCE"),
-    Facet.LEGAL_BASIS.value: Capability("LEGAL_BASIS_OF_PROCEDURE"),
-}
-
-#: Reverse templates: the subject is an entity (agency, field, level, group), no code.
-REVERSE_CAPABILITY: dict[str, Capability] = {
-    Facet.ISSUING_AGENCY.value: Capability("PROCEDURES_BY_AGENCY"),
-    Facet.IMPLEMENTING_AGENCY.value: Capability("PROCEDURES_BY_AGENCY"),
-    Facet.COORDINATING_AGENCY.value: Capability("PROCEDURES_BY_AGENCY"),
-    Facet.AUTHORIZED_AGENCY.value: Capability("PROCEDURES_BY_AGENCY"),
-    Facet.ADMINISTRATIVE_LEVEL.value: Capability("PROCEDURES_BY_LEVEL"),
-    Facet.FIELD.value: Capability("PROCEDURES_BY_FIELD"),
-    Facet.DOMAIN_GROUP.value: Capability("PROCEDURES_BY_GROUP"),
-}
+REASON_COMPARE_REQUIRES_TWO_PROCEDURES = "COMPARE_REQUIRES_TWO_PROCEDURES"
 
 
 @dataclass(slots=True)
@@ -121,7 +94,12 @@ class Task:
     expected_types: tuple[str, ...] = ()
     procedure_codes: tuple[str, ...] = ()
     subject_ref: int | None = None
+    #: Văn bản/quyết định đã grounding, dùng cho template ngược không phải thủ tục.
+    subject_key: str = ""
+    subject_kind: str = ""
     constraints: tuple[dict[str, str], ...] = ()
+    #: Tool chạy một lần nếu tool chính trả rỗng. Rỗng = không fallback.
+    fallback_tool: str = ""
     reason: str = ""
     merged_from: list[int] = field(default_factory=list)
 
@@ -139,6 +117,10 @@ class Task:
             data["expected_types"] = list(self.expected_types)
         if self.subject_ref is not None:
             data["subject_ref"] = self.subject_ref
+        if self.subject_key:
+            data["subject_key"] = self.subject_key
+        if self.subject_kind:
+            data["subject_kind"] = self.subject_kind
         if self.constraints:
             data["constraints"] = list(self.constraints)
         if self.reason:
@@ -174,19 +156,22 @@ def _blocked_reason(status: str) -> str:
 
 def _subject_for(
     request: dict[str, Any], by_index: dict[int, SubjectGrounding]
-) -> tuple[tuple[str, ...], str]:
-    """Return ``(codes, blocked_reason)``. Empty codes = no procedure code required."""
+) -> tuple[tuple[str, ...], str, str, str]:
+    """Return ``(codes, blocked_reason, subject_key, subject_kind)``."""
     ref = request.get("subject_ref")
     if ref is None:
-        return (), ""
+        return (), "", "", ""
     item = by_index.get(int(ref))
     if item is None:
-        return (), REASON_MISSING_SUBJECT
+        return (), REASON_MISSING_SUBJECT, "", ""
     if item.status != "resolved":
-        return (), _blocked_reason(item.status)
+        return (), _blocked_reason(item.status), "", ""
     if item.type == "procedure":
-        return ((item.code,) if item.code else ()), ""
-    return (), ""
+        return ((item.code,) if item.code else ()), "", "", ""
+    if item.type in {"document", "decision"} and item.code:
+        kind = "decision" if item.type == "decision" else str(item.method or "vocabulary")
+        return (), "", str(item.code), kind
+    return (), "", "", ""
 
 
 def _normalize_constraints(request: dict[str, Any]) -> tuple[dict[str, str], ...]:
@@ -211,11 +196,22 @@ def _constraints_allowed(
 
 
 def _choose_tool(
-    facet: str, operation: str, codes: tuple[str, ...]
+    facet: str,
+    operation: str,
+    codes: tuple[str, ...],
+    subject_key: str = "",
+    subject_kind: str = "",
 ) -> tuple[str, str, tuple[str, ...], str]:
     """Return ``(tool, intent, expected_types, reason)``. Non-empty reason = unsupported."""
     if operation in UNSUPPORTED_OPERATIONS:
         return "", "", (), REASON_UNSUPPORTED_OPERATION
+
+    if facet == Facet.RELATED_PROCEDURES.value and subject_key:
+        if subject_kind == "decision":
+            return TOOL_GRAPH, "PROCEDURES_BY_DECISION", (), ""
+        if subject_kind == "vocabulary":
+            return TOOL_GRAPH, "PROCEDURES_BY_DOCUMENT", (), ""
+
     if facet in UNSUPPORTED_FACETS:
         return "", "", (), REASON_UNSUPPORTED_FACET
 
@@ -226,6 +222,9 @@ def _choose_tool(
         if cap is None:
             return "", "", (), REASON_UNSUPPORTED_FACET
         return TOOL_GRAPH, cap.intent, cap.expected_types, ""
+
+    if facet == Facet.DECISION_NUMBER.value:
+        return (TOOL_FACT, "", (), "") if codes else (TOOL_HYBRID, "", (), "")
 
     if facet == Facet.GENERAL_INFO.value:
         if operation in AGGREGATE_OPERATIONS:
@@ -240,7 +239,10 @@ def _choose_tool(
     return "", "", (), REASON_UNSUPPORTED_FACET
 
 
-def plan_retrieval(frame: QuestionFrame, groundings: list[SubjectGrounding]) -> Plan:
+def plan_retrieval(
+    frame: QuestionFrame,
+    groundings: list[SubjectGrounding],
+) -> Plan:
     """Build a plan from a validated frame and its groundings. Never raises."""
     by_index = {item.index: item for item in groundings}
     plan = Plan()
@@ -252,17 +254,61 @@ def plan_retrieval(frame: QuestionFrame, groundings: list[SubjectGrounding]) -> 
 
     for index, request in enumerate(frame.get("requests") or []):
         facet = str(request.get("facet") or Facet.UNKNOWN.value)
+        lookup_facet = facet
         operation = str(request.get("operation") or RequestOperation.GET.value)
         text = " ".join(str(request.get("text") or "").split())
 
-        codes, blocked = _subject_for(request, by_index)
+        codes, blocked, subject_key, subject_kind = _subject_for(request, by_index)
         if blocked:
             plan.unsupported.append(
                 {"request_index": index, "reason": blocked, "text": text}
             )
             continue
 
-        tool, intent, expected_types, reason = _choose_tool(facet, operation, codes)
+        # Câu liệt kê theo thực thể (cơ quan/cấp/lĩnh vực/nhóm) không có subject_ref
+        # nhưng grounding đã xác định thực thể. Dùng thực thể đó để chọn template ngược.
+        if operation in AGGREGATE_OPERATIONS and not codes and not subject_key:
+            ref = request.get("subject_ref")
+            candidates = (
+                [by_index[int(ref)]]
+                if ref is not None and int(ref) in by_index
+                else groundings
+            )
+            for item in candidates:
+                if (
+                    item.status == "resolved"
+                    and item.type in ENTITY_TO_FACET
+                    and (item.code or item.name)
+                ):
+                    subject_key = str(item.code or item.name)
+                    subject_kind = item.type
+                    lookup_facet = ENTITY_TO_FACET[item.type]
+                    break
+
+        if operation == RequestOperation.COMPARE.value:
+            compare_codes = tuple(
+                dict.fromkeys(
+                    str(item.code)
+                    for item in groundings
+                    if item.type == "procedure"
+                    and item.status == "resolved"
+                    and str(item.code or "").strip()
+                )
+            )
+            if len(compare_codes) < 2:
+                plan.unsupported.append(
+                    {
+                        "request_index": index,
+                        "reason": REASON_COMPARE_REQUIRES_TWO_PROCEDURES,
+                        "text": text,
+                    }
+                )
+                continue
+            codes, blocked = compare_codes, ""
+
+        tool, intent, expected_types, reason = _choose_tool(
+            lookup_facet, operation, codes, subject_key, subject_kind
+        )
         if reason:
             plan.unsupported.append(
                 {"request_index": index, "reason": reason, "text": text}
@@ -290,11 +336,21 @@ def plan_retrieval(frame: QuestionFrame, groundings: list[SubjectGrounding]) -> 
             facet,
             operation,
             codes,
+            subject_key,
+            subject_kind,
             tuple((item["type"], item["text"]) for item in constraints),
         )
         if key in seen:
             seen[key].merged_from.append(index)
             continue
+
+        fallback_tool = ""
+        if tool == TOOL_GRAPH:
+            fallback_tool = (
+                TOOL_SECTION if facet == Facet.LEGAL_BASIS.value else TOOL_HYBRID
+            )
+        elif tool == TOOL_SECTION:
+            fallback_tool = TOOL_HYBRID
 
         task = Task(
             request_index=index,
@@ -305,7 +361,10 @@ def plan_retrieval(frame: QuestionFrame, groundings: list[SubjectGrounding]) -> 
             expected_types=expected_types,
             procedure_codes=codes,
             subject_ref=request.get("subject_ref"),
+            subject_key=subject_key,
+            subject_kind=subject_kind,
             constraints=constraints,
+            fallback_tool=fallback_tool,
         )
         seen[key] = task
         plan.tasks.append(task)

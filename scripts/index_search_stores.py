@@ -57,7 +57,8 @@ def fetch_chunks(limit: int | None = None) -> list[dict[str, Any]]:
             s.title,
             s.content,
             s.chunk_order,
-            s.detail_url
+            s.detail_url,
+            s.metadata
         FROM procedure_sections s
         JOIN procedures p ON p.procedure_code = s.procedure_code
         ORDER BY s.procedure_code, s.chunk_order
@@ -142,6 +143,7 @@ def ensure_es_index(es: Elasticsearch, recreate: bool = False) -> None:
                 "content": {"type": "text"},
                 "chunk_order": {"type": "integer"},
                 "detail_url": {"type": "keyword"},
+                "metadata": {"type": "object", "enabled": True},
             }
         },
     )
@@ -240,6 +242,7 @@ def index_qdrant_chunks(chunks: list[dict[str, Any]], recreate: bool = False) ->
                 "content": chunk["content"],
                 "chunk_order": chunk["chunk_order"],
                 "detail_url": chunk["detail_url"],
+                "metadata": chunk.get("metadata") or {},
             }
 
             points.append(

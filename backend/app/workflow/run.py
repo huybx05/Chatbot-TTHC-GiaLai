@@ -35,6 +35,7 @@ import traceback
 from dataclasses import dataclass
 from typing import Any
 
+from backend.app.memory.types import SessionMemory
 from backend.app.workflow import trace_log
 from backend.app.workflow.graph import WORKFLOW
 from backend.app.workflow.state import AgentState, Outcome, new_state
@@ -144,7 +145,6 @@ class RunResult:
             "groundings": list(self.state.get("groundings") or []),
             "plan": dict(self.state.get("plan") or {}),
             "coverage": list(self.state.get("coverage") or []),
-            "discovery": list(self.state.get("discovery") or []),
             "plan_class": str(self.state.get("plan_class") or ""),
             "plan_class_reason": str(self.state.get("plan_class_reason") or ""),
             "request_plan_class": list(self.state.get("request_plan_class") or []),
@@ -164,6 +164,15 @@ class RunResult:
             "documents": list(self.state.get("documents") or []),
             "entity": self.state.get("entity"),
             "resolution": dict(self.state.get("resolution") or {}),
+            "candidate_procedures": list(
+                self.state.get("candidate_procedures") or []
+            ),
+            "grounded_procedure": dict(
+                self.state.get("grounded_procedure") or {}
+            ),
+            "answered_procedure": dict(
+                self.state.get("answered_procedure") or {}
+            ),
             "grounding_ms": int((self.state.get("timings") or {}).get("grounding_ms") or 0),
             "error": str(self.state.get("error") or ""),
             "timings": self.timings,
@@ -177,16 +186,40 @@ class RunResult:
             "citations": self.citations,
             #: Có câu trả lời thật hay chưa. Giao diện dựa vào cờ này, không đoán theo độ dài.
             "has_answer": bool(str(self.state.get("answer") or "").strip()),
+            #: Snapshot gọn cho trace_log; API không dùng các trường này để hiển thị.
+            "trace": {
+                "original_question": str(
+                    self.state.get("original_question") or self.question
+                ),
+                "retrieval_question": str(
+                    self.state.get("retrieval_question") or self.question
+                ),
+                "rewrite": dict(self.state.get("rewrite") or {}),
+                "memory": dict(self.state.get("memory") or {}),
+                "candidate_procedures": list(
+                    self.state.get("candidate_procedures") or []
+                ),
+                "grounded_procedure": dict(
+                    self.state.get("grounded_procedure") or {}
+                ),
+                "answered_procedure": dict(
+                    self.state.get("answered_procedure") or {}
+                ),
+            },
         }
 
 
 async def ask(
     question: str,
     *,
+    original_question: str | None = None,
+    memory_anchor: dict[str, Any] | None = None,
+    rewrite: dict[str, Any] | None = None,
     turn_index: int = 1,
     generate: bool = True,
     log_trace: bool = True,
     source: str = "api",
+    memory: SessionMemory | None = None,
 ) -> RunResult:
     """Chạy một câu hỏi trọn luồng. Đây là hàm **duy nhất** bên ngoài được gọi.
 
@@ -195,6 +228,11 @@ async def ask(
     """
     bat_dau = time.perf_counter()
     state = new_state(question, turn_index=turn_index)
+    state["original_question"] = original_question or question
+    state["retrieval_question"] = question
+    state["memory_anchor"] = dict(memory_anchor or {})
+    state["rewrite"] = dict(rewrite or {})
+    state["memory"] = memory.to_dict() if memory is not None else {}
     state["skip_generate"] = not generate
 
     try:

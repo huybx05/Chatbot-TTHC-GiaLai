@@ -63,6 +63,7 @@ import logging
 import httpx
 
 from backend.app.config import settings
+from backend.app.cost.service import record_usage
 from backend.app.rag.types import Candidate, RetrievalOutcome
 
 logger = logging.getLogger(__name__)
@@ -109,6 +110,58 @@ def _rerank_text(candidate: Candidate) -> str:
 def enabled() -> bool:
     """Rerank có cấu hình không."""
     return bool(settings.reranker_base_url.strip() and settings.qwen_api_key.strip())
+
+
+async def rerank_procedure_names(
+    question: str,
+    candidates: list[tuple[str, str, float]],
+    *,
+    top_n: int = 8,
+) -> dict[str, float]:
+    """Rerank **tên thủ tục** khi resolver đang mơ hồ.
+
+    Chỉ gửi vài tên ứng viên, không gửi toàn bộ chunk; mục đích là chọn đúng thủ tục
+    trước khi truy xuất. Lỗi API trả ``{}`` để resolver giữ hành vi ambiguous cũ.
+    """
+    if not candidates or not enabled():
+        return {}
+    selected = candidates[: max(1, top_n)]
+    body = {
+        "model": settings.reranker_model_name,
+        "input": {
+            "query": question,
+            "documents": [name for _code, name, _score in selected],
+        },
+        "parameters": {"return_documents": False, "top_n": len(selected)},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(
+                settings.reranker_base_url,
+                headers={
+                    "Authorization": f"Bearer {settings.qwen_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=body,
+            )
+        response.raise_for_status()
+        payload = response.json()
+        results = payload["output"]["results"]
+        await record_usage(
+            stage="rerank",
+            model=settings.reranker_model_name,
+            rerank_tokens=int((payload.get("usage") or {}).get("total_tokens", 0) or 0),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Rerank thủ tục lỗi, giữ ambiguous: %s", exc)
+        return {}
+
+    scores: dict[str, float] = {}
+    for item in results:
+        index = int(item["index"])
+        if 0 <= index < len(selected):
+            scores[selected[index][0]] = float(item["relevance_score"])
+    return scores
 
 
 async def rerank(
@@ -175,7 +228,13 @@ async def rerank(
                 json=body,
             )
         response.raise_for_status()
-        results = response.json()["output"]["results"]
+        payload = response.json()
+        results = payload["output"]["results"]
+        await record_usage(
+            stage="rerank",
+            model=settings.reranker_model_name,
+            rerank_tokens=int((payload.get("usage") or {}).get("total_tokens", 0) or 0),
+        )
     except Exception as exc:  # noqa: BLE001 — rerank hỏng không được chặn truy xuất
         logger.warning("Rerank lỗi, giữ nguyên thứ tự trước đó: %s", exc)
         return RetrievalOutcome(

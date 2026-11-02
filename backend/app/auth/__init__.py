@@ -2,11 +2,9 @@
 
 from backend.app.auth.dependencies import (
     AdminUser,
-    AnalystUser,
     CurrentUser,
     get_current_user,
     require_admin,
-    require_analyst,
 )
 from backend.app.auth.security import (
     create_access_token,
@@ -18,7 +16,6 @@ from backend.app.auth.security import (
 
 __all__ = [
     "AdminUser",
-    "AnalystUser",
     "CurrentUser",
     "create_access_token",
     "decode_access_token",
@@ -26,6 +23,5 @@ __all__ = [
     "hash_password",
     "needs_rehash",
     "require_admin",
-    "require_analyst",
     "verify_password",
 ]

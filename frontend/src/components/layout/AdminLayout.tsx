@@ -5,13 +5,14 @@ import { getAdminSystemStatus, type AdminSystemStatus } from "../../api/admin";
 
 const NAV_ITEMS = [
   { to: "/admin", label: "Tổng quan", icon: "dashboard", end: true },
-  { to: "/admin/data", label: "Dữ liệu PostgreSQL", icon: "database", end: false },
-  { to: "/admin/faq", label: "FAQ", icon: "quiz", end: false },
-  { to: "/admin/graph", label: "Neo4j Graph", icon: "hub", end: false },
+  { to: "/admin/data", label: "Cơ sở dữ liệu", icon: "database", end: false },
+  { to: "/admin/faq", label: "Quản lý FAQ", icon: "quiz", end: false },
+  { to: "/admin/graph", label: "Đồ thị tri thức", icon: "hub", end: false },
   { to: "/admin/retrieval", label: "Kiểm thử truy xuất", icon: "manage_search", end: false },
-  { to: "/admin/conversations", label: "Log hội thoại", icon: "forum", end: false },
-  { to: "/admin/costs", label: "Quản lý chi phí", icon: "payments", end: false },
-  { to: "/admin/operations", label: "Vận hành", icon: "settings_suggest", end: false },
+  { to: "/admin/conversations", label: "Lịch sử hội thoại", icon: "forum", end: false },
+  { to: "/admin/costs", label: "Quản lý chi phí AI", icon: "payments", end: false },
+  { to: "/admin/users", label: "Quản lý người dùng", icon: "group", end: false },
+  { to: "/admin/operations", label: "Vận hành (Đang thử nghiệm)", icon: "settings_suggest", end: false },
 ];
 
 function navClass({ isActive }: { isActive: boolean }) {
@@ -41,6 +42,11 @@ export default function AdminLayout({ onLogout }: AdminLayoutProps) {
     ["Elasticsearch", status?.services.elasticsearch.ready],
     ["Qdrant", status?.services.qdrant.ready],
   ] as const;
+  const readyCount = services.filter(([, ready]) => ready).length;
+  const allReady = readyCount === services.length;
+  const serviceTitle = services
+    .map(([name, ready]) => `${name}: ${ready ? "online" : "offline"}`)
+    .join("\n");
 
   return (
     <div className="min-h-screen bg-main-bg text-text-primary lg:grid lg:grid-cols-[260px_1fr]">
@@ -90,19 +96,37 @@ export default function AdminLayout({ onLogout }: AdminLayoutProps) {
         <header className="sticky top-0 z-30 border-b border-border-color bg-main-bg/95 px-4 py-3 backdrop-blur lg:px-6">
           <div className="flex items-center justify-between gap-4">
             <div className="min-w-0">
-              <p className="text-xs font-semibold uppercase tracking-wide text-primary">Monitoring nội bộ</p>
-              <p className="truncate text-sm text-text-secondary">PostgreSQL + Neo4j · data_test · monitoring v1</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-primary">Hệ thống quản trị và giám sát Chatbot AI Gia Lai</p>
+              {/* <p className="truncate text-sm text-text-secondary">PostgreSQL + Neo4j · data_test · monitoring v1</p> */}
             </div>
-            <div className="hidden items-center gap-2 xl:flex">
-              {services.map(([name, ready]) => (
+            <div className="hidden xl:block">
+              <span
+                title={serviceTitle}
+                className={[
+                  "inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold",
+                  status === null
+                    ? "border-border-color bg-card-surface text-text-secondary"
+                    : allReady
+                      ? "border-[#B8DDC6] bg-[#E7F4EC] text-[#2E7D4F]"
+                      : "border-[#E6B8B2] bg-danger-surface text-danger",
+                ].join(" ")}
+              >
                 <span
-                  key={name}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-border-color bg-card-surface px-3 py-1 text-xs font-semibold text-text-secondary"
-                >
-                  <span className={`size-2 rounded-full ${ready ? "bg-[#2E7D4F]" : "bg-[#B33A2F]"}`} />
-                  {name} {ready ? "ready" : "offline"}
-                </span>
-              ))}
+                  className={[
+                    "size-2 rounded-full",
+                    status === null
+                      ? "bg-text-secondary/40"
+                      : allReady
+                        ? "bg-[#2E7D4F]"
+                        : "bg-danger",
+                  ].join(" ")}
+                />
+                {status === null
+                  ? "Đang kiểm tra dịch vụ"
+                  : allReady
+                    ? `Hệ thống ổn định · ${readyCount}/${services.length} dịch vụ`
+                    : `${readyCount}/${services.length} dịch vụ online`}
+              </span>
             </div>
           </div>
           <nav className="mt-3 flex gap-2 overflow-x-auto lg:hidden">

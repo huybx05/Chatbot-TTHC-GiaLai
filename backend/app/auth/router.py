@@ -51,28 +51,36 @@ lợi ích không đáng.
 
 from __future__ import annotations
 
-import ipaddress
-from typing import Annotated, Any
+import re
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
+from pydantic import BaseModel, ConfigDict, field_validator
 from sqlalchemy import text
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 
-from backend.app.auth.dependencies import CurrentUser
+from backend.app.auth.dependencies import AdminUser, CurrentUser
 from backend.app.auth.security import (
     create_access_token,
+    find_reused_session,
     hash_password,
     issue_refresh_token,
+    mark_user_seen,
     needs_rehash,
     revoke_all_sessions,
     revoke_session,
+    revoke_session_family,
     rotate_refresh_token,
     verify_password,
 )
 from backend.app.config import settings
+from backend.app.rate_limit import limiter
+from backend.app.security_utils import client_ip as resolve_client_ip
 
 router = APIRouter(prefix="/auth", tags=["xác thực"])
+_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 #: Câu lỗi dùng CHUNG cho mọi kiểu thất bại. Xem điểm bảo mật (1).
 LOI_DANG_NHAP = "Tên đăng nhập hoặc mật khẩu không đúng."
@@ -135,44 +143,22 @@ def _ghi_audit(
 
 
 def _client_ip(request: Request) -> str | None:
-    """IP của client, đã kiểm hợp lệ. Trả ``None`` nếu không phân tích được.
+    """IP client đã kiểm hợp lệ, chỉ đọc header từ proxy tin cậy."""
+    return resolve_client_ip(request)
 
-    ## Vì sao phải kiểm, không dùng thẳng giá trị
 
-    Cột `sessions.ip_address` và `audit_logs.ip_address` là kiểu **`INET`**, nên
-    PostgreSQL **từ chối** mọi chuỗi không phải địa chỉ IP — và lỗi đó là
-    ``DataError``, tức **HTTP 500**. Đã gặp thật: `fastapi.testclient` gửi
-    ``client.host = "testclient"``, không phải IP. Trong production, một reverse proxy
-    cấu hình sai hoặc một header ``X-Forwarded-For`` chứa chuỗi rác cũng gây đúng lỗi
-    này — **đăng nhập hỏng vì một header**, rất khó truy.
-
-    Vì vậy: phân tích bằng `ipaddress`, không được thì trả ``None`` (cột cho phép NULL).
-    Mất một trường thông tin phụ tốt hơn hỏng chức năng đăng nhập.
-
-    ## `X-Forwarded-For` chỉ tin khi có proxy
-
-    Header này do client tự đặt được, nên nếu không chạy sau proxy tin cậy thì nó là dữ
-    liệu giả. Ở đây lấy phần tử đầu (client gốc) nhưng **không** dùng để phân quyền —
-    chỉ ghi nhật ký. Không có logic nào dựa vào giá trị này để cho qua.
-    """
-    ung_vien: list[str] = []
-    forwarded = request.headers.get("x-forwarded-for")
-    if forwarded:
-        ung_vien.append(forwarded.split(",")[0].strip())
-    if request.client and request.client.host:
-        ung_vien.append(request.client.host)
-
-    for raw in ung_vien:
-        if not raw:
-            continue
-        # Bỏ cổng nếu có dạng "1.2.3.4:5678" (một số proxy ghi kèm cổng).
-        thu = raw.rsplit(":", 1)[0] if raw.count(":") == 1 else raw
-        for candidate in (thu, raw):
-            try:
-                return str(ipaddress.ip_address(candidate))
-            except ValueError:
-                continue
-    return None
+def _enforce_rate_limit(request: Request, scope: str, limit: int) -> None:
+    """Chặn theo IP; dùng Redis nếu có, fallback in-memory khi chạy local."""
+    if limit <= 0:
+        return
+    ip = resolve_client_ip(request) or "unknown"
+    result = limiter.check(f"{scope}:{ip}", limit=limit)
+    if not result.allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Bạn thao tác quá nhanh. Vui lòng thử lại sau.",
+            headers={"Retry-After": str(result.retry_after)},
+        )
 
 
 def _dat_cookie(response: Response, refresh_token: str) -> None:
@@ -190,11 +176,374 @@ def _dat_cookie(response: Response, refresh_token: str) -> None:
     )
 
 
+def _dat_session_cookie(response: Response, session_token: str) -> None:
+    """Cookie phiên opaque dùng cho mọi request từ trình duyệt."""
+    response.set_cookie(
+        key="session_id",
+        value=session_token,
+        max_age=settings.refresh_token_expire_days * 24 * 3600,
+        httponly=True,
+        secure=settings.app_env.lower() in {"production", "prod"},
+        samesite="lax",
+        path="/",
+    )
+
+
+def _xoa_session_cookie(response: Response) -> None:
+    response.delete_cookie("session_id", path="/")
+    response.delete_cookie("refresh_token", path="/api/v1/auth")
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str
+    password: str
+
+    @field_validator("username")
+    @classmethod
+    def validate_username(cls, value: str) -> str:
+        username = value.strip()
+
+        if not 3 <= len(username) <= 64:
+            raise ValueError("Tên đăng nhập phải có từ 3 ký tự trở lên.")
+
+        if not _USERNAME_PATTERN.fullmatch(username):
+            raise ValueError(
+                "Tên đăng nhập chỉ gồm chữ cái, số, dấu chấm, gạch dưới hoặc gạch ngang."
+            )
+
+        return username
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, value: str) -> str:
+        if value == "":
+            raise ValueError("Mật khẩu không được để trống.")
+
+        return value
+
+
+class AdminUserCreateRequest(RegisterRequest):
+    """Payload tạo tài khoản từ trang quản trị."""
+
+    role: Literal["client", "admin"] = "client"
+    is_active: bool = True
+
+
+class AdminUserUpdateRequest(BaseModel):
+    """Chỉ nhận các trường được phép thay đổi từ trang quản trị."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    username: str | None = None
+    password: str | None = None
+    role: Literal["client", "admin"] | None = None
+    is_active: bool | None = None
+
+    @field_validator("username")
+    @classmethod
+    def validate_optional_username(cls, value: str | None) -> str | None:
+        return RegisterRequest.validate_username(value) if value is not None else None
+
+    @field_validator("password")
+    @classmethod
+    def validate_optional_password(cls, value: str | None) -> str | None:
+        return RegisterRequest.validate_password(value) if value is not None else None
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.model_fields_set:
+            raise ValueError("Cần cung cấp ít nhất một thông tin để cập nhật.")
+
+
+def _admin_user_response(row: Any) -> dict[str, Any]:
+    last_seen_at = row["last_seen_at"]
+    return {
+        "id": int(row["id"]),
+        "username": str(row["username"]),
+        "role": str(row["role"]),
+        "is_active": bool(row["is_active"]),
+        "last_seen_at": last_seen_at.isoformat() if last_seen_at else None,
+    }
+
+
+def _managed_user(conn: Connection, user_id: int) -> Any:
+    row = conn.execute(
+        text(
+            "SELECT id, username, role, is_active, last_seen_at "
+            "FROM users WHERE id = :user_id"
+        ),
+        {"user_id": user_id},
+    ).mappings().first()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Tài khoản không tồn tại.")
+    return row
+
+
+def _ensure_admin_remains(conn: Connection, user: Any, *, role: str, is_active: bool) -> None:
+    if user["role"] != "admin" or not user["is_active"] or (role == "admin" and is_active):
+        return
+
+    active_admin_ids = conn.execute(
+        text(
+            "SELECT id FROM users WHERE role = 'admin' AND is_active = TRUE FOR UPDATE"
+        )
+    ).scalars().all()
+    if len(active_admin_ids) <= 1:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="Không thể thay đổi quản trị viên đang hoạt động cuối cùng.",
+        )
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
+#Đăng ký
+@router.post(
+    "/register",
+    status_code=status.HTTP_201_CREATED,
+    summary="Đăng ký tài khoản người dùng",
+)
+def register(
+    payload: RegisterRequest,
+    request: Request,
+    response: Response,
+    conn: DBConn,
+) -> dict[str, Any]:
+    _enforce_rate_limit(request, "register", settings.register_rate_limit_per_min)
+    try:
+        user = conn.execute(
+            text(
+                """
+                INSERT INTO users (
+                    username,
+                    password_hash,
+                    role,
+                    is_active,
+                    failed_attempts,
+                    last_seen_at
+                )
+                VALUES (
+                    :username,
+                    :password_hash,
+                    'client',
+                    TRUE,
+                    0,
+                    NOW()
+                )
+                RETURNING id, username, role
+                """
+            ),
+            {
+                "username": payload.username,
+                "password_hash": hash_password(payload.password),
+            },
+        ).mappings().one()
 
+        access_token = create_access_token(
+            user_id=user["id"],
+            username=user["username"],
+            role=user["role"],
+        )
+        refresh_token = issue_refresh_token(
+            conn,
+            user_id=user["id"],
+            user_agent=request.headers.get("user-agent", ""),
+            ip_address=_client_ip(request),
+        )
+        conn.commit()
+    except IntegrityError:
+        conn.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Tên đăng nhập đã được sử dụng.",
+        ) from None
+
+    _dat_cookie(response, refresh_token)
+    _dat_session_cookie(response, refresh_token)
+    _ghi_audit(conn, user_id=user["id"], action="register", ip=_client_ip(request))
+
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in": settings.access_token_expire_minutes * 60,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "role": user["role"],
+        },
+    }
+
+
+@router.get("/admin/users", summary="Danh sách tài khoản cho quản trị viên")
+def list_admin_users(
+    _admin: AdminUser,
+    conn: DBConn,
+) -> dict[str, list[dict[str, Any]]]:
+    rows = conn.execute(
+        text(
+            "SELECT id, username, role, is_active, last_seen_at "
+            "FROM users ORDER BY created_at DESC, id DESC"
+        )
+    ).mappings().all()
+    return {"items": [_admin_user_response(row) for row in rows]}
+
+
+@router.post(
+    "/admin/users",
+    status_code=status.HTTP_201_CREATED,
+    summary="Tạo tài khoản từ trang quản trị",
+)
+def create_admin_user(
+    payload: AdminUserCreateRequest,
+    request: Request,
+    admin: AdminUser,
+    conn: DBConn,
+) -> dict[str, dict[str, Any]]:
+    try:
+        row = conn.execute(
+            text(
+                """
+                INSERT INTO users (username, password_hash, role, is_active, failed_attempts)
+                VALUES (:username, :password_hash, :role, :is_active, 0)
+                RETURNING id, username, role, is_active, last_seen_at
+                """
+            ),
+            {
+                "username": payload.username,
+                "password_hash": hash_password(payload.password),
+                "role": payload.role,
+                "is_active": payload.is_active,
+            },
+        ).mappings().one()
+        conn.commit()
+    except IntegrityError:
+        conn.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="Tên đăng nhập đã được sử dụng.",
+        ) from None
+
+    _ghi_audit(
+        conn,
+        user_id=admin["id"],
+        action="admin_user_created",
+        ip=_client_ip(request),
+        detail={"target_user_id": row["id"], "role": row["role"]},
+    )
+    return {"item": _admin_user_response(row)}
+
+
+@router.patch("/admin/users/{user_id}", summary="Cập nhật tài khoản từ trang quản trị")
+def update_admin_user(
+    user_id: int,
+    payload: AdminUserUpdateRequest,
+    request: Request,
+    admin: AdminUser,
+    conn: DBConn,
+) -> dict[str, dict[str, Any]]:
+    current = _managed_user(conn, user_id)
+    next_role = payload.role if payload.role is not None else current["role"]
+    next_is_active = payload.is_active if payload.is_active is not None else current["is_active"]
+
+    if user_id == admin["id"] and (next_role != "admin" or not next_is_active):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Không thể tự hạ quyền hoặc vô hiệu hoá tài khoản đang đăng nhập.",
+        )
+
+    _ensure_admin_remains(conn, current, role=next_role, is_active=next_is_active)
+    password_hash = hash_password(payload.password) if payload.password is not None else None
+
+    try:
+        row = conn.execute(
+            text(
+                """
+                UPDATE users
+                   SET username = :username,
+                       password_hash = COALESCE(:password_hash, password_hash),
+                       role = :role,
+                       is_active = :is_active,
+                       failed_attempts = CASE
+                           WHEN :password_hash IS NULL THEN failed_attempts
+                           ELSE 0
+                       END,
+                       locked_until = CASE
+                           WHEN :password_hash IS NULL THEN locked_until
+                           ELSE NULL
+                       END
+                 WHERE id = :user_id
+                 RETURNING id, username, role, is_active, last_seen_at
+                """
+            ),
+            {
+                "user_id": user_id,
+                "username": (
+                    payload.username if payload.username is not None else current["username"]
+                ),
+                "password_hash": password_hash,
+                "role": next_role,
+                "is_active": next_is_active,
+            },
+        ).mappings().one()
+        if (
+            password_hash is not None
+            or current["role"] != next_role
+            or current["is_active"] != next_is_active
+        ):
+            revoke_all_sessions(conn, user_id)
+        conn.commit()
+    except IntegrityError:
+        conn.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="Tên đăng nhập đã được sử dụng.",
+        ) from None
+
+    _ghi_audit(
+        conn,
+        user_id=admin["id"],
+        action="admin_user_updated",
+        ip=_client_ip(request),
+        detail={"target_user_id": user_id},
+    )
+    return {"item": _admin_user_response(row)}
+
+
+@router.delete("/admin/users/{user_id}", summary="Xóa vĩnh viễn tài khoản từ trang quản trị")
+def delete_admin_user(
+    user_id: int,
+    request: Request,
+    admin: AdminUser,
+    conn: DBConn,
+) -> dict[str, bool]:
+    current = _managed_user(conn, user_id)
+    if user_id == admin["id"]:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Không thể tự xóa tài khoản đang đăng nhập.",
+        )
+
+    _ensure_admin_remains(
+        conn,
+        current,
+        role="client",
+        is_active=False,
+    )
+    conn.execute(text("DELETE FROM users WHERE id = :user_id"), {"user_id": user_id})
+    conn.commit()
+
+    _ghi_audit(
+        conn,
+        user_id=admin["id"],
+        action="admin_user_deleted",
+        ip=_client_ip(request),
+        detail={"target_user_id": user_id, "username": current["username"]},
+    )
+    return {"deleted": True}
+
+#Đăng nhập
 @router.post("/login", summary="Đăng nhập")
 def login(
     request: Request,
@@ -207,6 +556,7 @@ def login(
     Dùng ``OAuth2PasswordRequestForm`` (``application/x-www-form-urlencoded``) để nút
     **Authorize** trong ``/docs`` hoạt động ngay — tiện khi bảo vệ đồ án trước Hội đồng.
     """
+    _enforce_rate_limit(request, "login", settings.login_rate_limit_per_min)
     username = form.username.strip()
     password = form.password
 
@@ -291,7 +641,7 @@ def login(
     conn.execute(
         text(
             "UPDATE users SET failed_attempts = 0, locked_until = NULL, "
-            "       last_login_at = NOW() WHERE id = :i"
+            "       last_login_at = NOW(), last_seen_at = NOW() WHERE id = :i"
         ),
         {"i": row.id},
     )
@@ -306,6 +656,7 @@ def login(
     )
     conn.commit()
     _dat_cookie(response, refresh_token)
+    _dat_session_cookie(response, refresh_token)
     _ghi_audit(conn, user_id=row.id, action="login_ok", ip=_client_ip(request))
 
     return {
@@ -332,6 +683,7 @@ def refresh(
     Nhận refresh token từ cookie ``refresh_token`` (trình duyệt) **hoặc** từ body JSON
     (client API). Trình duyệt không cần gửi gì thêm vì cookie tự đi kèm.
     """
+    _enforce_rate_limit(request, "refresh", settings.refresh_rate_limit_per_min)
     token = request.cookies.get("refresh_token")
     if not token:
         raise HTTPException(
@@ -344,7 +696,24 @@ def refresh(
 
     session = find_active_session(conn, token)
     if session is None:
+        reused = find_reused_session(conn, token)
+        if reused is not None:
+            revoke_session_family(conn, str(reused.family_id))
+            conn.commit()
+            _ghi_audit(
+                conn,
+                user_id=reused.user_id,
+                action="refresh_reuse_detected",
+                ip=_client_ip(request),
+            )
+            response.delete_cookie("refresh_token", path="/api/v1/auth")
+            _xoa_session_cookie(response)
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                detail="Phiên không hợp lệ và đã bị thu hồi vì lý do an toàn. Đăng nhập lại.",
+            )
         response.delete_cookie("refresh_token", path="/api/v1/auth")
+        _xoa_session_cookie(response)
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
             detail="Phiên đã hết hạn hoặc đã bị thu hồi. Đăng nhập lại.",
@@ -371,12 +740,15 @@ def refresh(
         user_agent=request.headers.get("user-agent", ""),
         ip_address=_client_ip(request),
     )
+    if token_moi is not None:
+        mark_user_seen(conn, user_id=row.id)
     conn.commit()
 
     if token_moi is None:
         # `rotate_refresh_token` trả None khi token đã bị thu hồi mà vẫn dùng lại → đã
         # thu hồi cả family. Đây là dấu hiệu bị đánh cắp.
         response.delete_cookie("refresh_token", path="/api/v1/auth")
+        _xoa_session_cookie(response)
         _ghi_audit(conn, user_id=row.id, action="refresh_reuse_detected", ip=_client_ip(request))
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
@@ -384,6 +756,7 @@ def refresh(
         )
 
     _dat_cookie(response, token_moi)
+    _dat_session_cookie(response, token_moi)
     return {
         "access_token": create_access_token(user_id=row.id, username=row.username, role=row.role),
         "token_type": "bearer",
@@ -398,11 +771,11 @@ def logout(request: Request, response: Response, conn: DBConn) -> dict[str, str]
     Access token đang có **vẫn dùng được** tới khi hết hạn (tối đa 30 phút) — đó là bản
     chất của JWT không trạng thái. Nếu cần chặn ngay thì dùng ``/logout-all``.
     """
-    token = request.cookies.get("refresh_token")
+    token = request.cookies.get("session_id") or request.cookies.get("refresh_token")
     if token:
         revoke_session(conn, token)
         conn.commit()
-    response.delete_cookie("refresh_token", path="/api/v1/auth")
+    _xoa_session_cookie(response)
     return {"status": "đã đăng xuất"}
 
 
@@ -411,7 +784,7 @@ def logout_all(user: CurrentUser, conn: DBConn, response: Response) -> dict[str,
     """Thu hồi **mọi** phiên của người dùng. Dùng khi nghi tài khoản bị chiếm."""
     n = revoke_all_sessions(conn, user["id"])
     conn.commit()
-    response.delete_cookie("refresh_token", path="/api/v1/auth")
+    _xoa_session_cookie(response)
     _ghi_audit(conn, user_id=user["id"], action="logout_all", detail={"sessions": n})
     return {"status": "đã thu hồi mọi phiên", "so_phien": n}
 

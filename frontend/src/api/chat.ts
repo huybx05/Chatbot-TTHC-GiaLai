@@ -1,3 +1,4 @@
+import type { ProcedureDocument } from "../data/chatTypes";
 import type { ChatRequest, ChatResponse } from "../types/chat";
 import { API_BASE_URL } from "./config";
 import { request } from "./http";
@@ -15,8 +16,13 @@ export interface StreamKetQua {
     procedure: { procedure_code: string; procedure_name: string } | null;
     citations: { title: string; url: string; section: string }[];
     options: { value: string; label: string; hint?: string }[];
+    documents?: ProcedureDocument[];
+    /** ID message đã lưu trong PostgreSQL; dùng cho feedback. */
+    message_id?: string;
     /** `true` = câu trả lời phát lại từ cache (không gọi mô hình lần này). */
     cached?: boolean;
+    /** FAQ gợi ý tiếp theo, tối đa 3. */
+    suggestions?: { id: string; question: string }[];
   } | null;
   /** `false` = mô hình không phát mẩu nào (câu hỏi lại, từ chối, hoặc lỗi) — chữ đến một lần. */
   streamed: boolean;
@@ -41,7 +47,11 @@ export async function askChatStream(
 ): Promise<StreamKetQua> {
   const phan_hoi = await fetch(`${API_BASE_URL}/chat/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "text/event-stream",
+    },
     body: JSON.stringify(payload),
     signal: hooks.signal,
   });

@@ -30,7 +30,8 @@ import unicodedata
 DOCUMENT_CODE_PATTERN = re.compile(
     r"\b\d{1,4}\s*/\s*\d{4}\s*/\s*"
     r"(?:NĐ[-\s]?CP|TT[-\s]?[A-ZĐ]+|QH\d{1,2}|QĐ[-\s]?[A-ZĐ]+|NQ[-\s]?[A-ZĐ]+|TTLT[-\s]?[A-ZĐ]+)\b"
-    r"|\b\d{1,4}\s*/\s*QĐ[-\s]?[A-ZĐ]+\b",
+    r"|\b\d{1,4}\s*/\s*QĐ[-\s]?[A-ZĐ]+\b"
+    r"|\bQĐ\s*/\s*\d{1,4}\s*[-/]\s*[A-ZĐ]+\b",
     re.IGNORECASE,
 )
 

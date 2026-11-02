@@ -9,11 +9,15 @@ from backend.app.workflow import answer, graph
 from backend.app.workflow.answer import AnswerResult, build_request_block
 
 
-def _evidence(facet: str = "required_documents") -> dict:
+def _evidence(
+    facet: str = "required_documents",
+    *,
+    content: str = "Đơn đề nghị, bản sao giấy tờ",
+) -> dict:
     return {
         "kind": "section",
         "title": "Hồ sơ",
-        "content": "Đơn đề nghị, bản sao giấy tờ",
+        "content": content,
         "facet": facet,
         "request_index": 0,
     }
@@ -86,8 +90,74 @@ def test_node_sinh_returns_the_only_model_response(monkeypatch) -> None:
     patch = asyncio.run(graph.node_sinh(_state()))
     assert goi["lan"] == 1
     assert "đơn đề nghị" in patch["answer"]
-    assert patch["verification"] == {"status": "skipped", "issues": []}
+    assert patch["verification"] == {"status": "passed", "issues": []}
     assert patch["tokens"]["input"] == 150
+
+
+def test_chon_evidence_giu_du_case_va_dedupe() -> None:
+    evidence = [
+        {
+            "kind": "section",
+            "content": f"Nội dung {index}",
+            "facet": "required_documents",
+            "request_index": 0,
+            "metadata": {"case_order": index % 2 + 1, "case_name": f"case {index % 2 + 1}"},
+        }
+        for index in range(20)
+    ]
+    evidence.append(dict(evidence[0]))
+    chosen = answer._chon_evidence(
+        evidence,
+        requests=[{"facet": "required_documents"}],
+        coverage=[{"request_index": 0, "status": "covered", "facet": "required_documents"}],
+    )
+
+    assert len(chosen) == 20
+
+
+def test_validator_bat_so_khong_co_trong_evidence() -> None:
+    issues = answer.verify_contract(
+        "Thời hạn là 12 ngày.",
+        [_evidence(content="Thời hạn: 9 ngày. Trường hợp khó khăn cộng thêm 10 ngày.")],
+    )
+
+    assert "unsupported_number:12" in issues
+
+
+def test_validator_cho_phep_tong_hai_moc() -> None:
+    issues = answer.verify_contract(
+        "Tối đa 19 ngày.",
+        [_evidence(content="Thời hạn: 9 ngày. Trường hợp khó khăn cộng thêm 10 ngày.")],
+    )
+
+    assert "unsupported_number:19" not in issues
+
+
+def test_validator_bo_qua_ma_thu_tuc() -> None:
+    issues = answer.verify_contract(
+        "Thủ tục 1.014100 có thời hạn 10 ngày.",
+        [_evidence(content="Thời hạn: 10 ngày.")],
+    )
+
+    assert not any(item.startswith("unsupported_number:") for item in issues)
+
+
+def test_validator_bat_facet_covered_bi_bo_sot() -> None:
+    issues = answer.verify_contract(
+        "Hồ sơ gồm đơn đề nghị.",
+        [_evidence()],
+        requests=[
+            {
+                "text": "số quyết định",
+                "facet": "decision_number",
+                "operation": "get",
+                "subject_ref": 0,
+            }
+        ],
+        coverage=[{"request_index": 0, "status": "covered"}],
+    )
+
+    assert "missing_covered_facet:decision_number" in issues
 
 
 # ── chọn evidence theo ý + nhóm context ──────────────────────────────────

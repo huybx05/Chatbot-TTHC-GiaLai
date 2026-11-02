@@ -1,17 +1,63 @@
 import { type ReactNode } from "react";
 
+import type { ProcedureDocument } from "../data/chatTypes";
+
 /**
  * Hiển thị văn bản do mô hình sinh: `**in đậm**` và các dòng `- gạch đầu dòng`.
  *
- * Cố ý **không** dựng markdown đầy đủ: nội dung này là câu trả lời cho người dân, không phải
- * tài liệu. Mô hình chỉ dùng đúng hai kiểu nhấn mạnh đó, nên xử lý hai kiểu đó là đủ — và giữ
- * cho mọi chỗ hiển thị câu trả lời (trang quản trị và giao diện người dân) trông giống nhau.
+ * Ngoài ra marker `{{file:<id>}}` được render thành chip tải mẫu nếu frontend có
+ * metadata file tương ứng. Marker không có metadata bị bỏ, không hiện id thô.
  */
-export function RichText({ text, className = "" }: { text: string; className?: string }) {
-  return <div className={className}>{dinh_dang(text)}</div>;
+export function RichText({
+  text,
+  className = "",
+  fileMap,
+}: {
+  text: string;
+  className?: string;
+  fileMap?: Record<string, ProcedureDocument>;
+}) {
+  return <div className={className}>{dinh_dang(text, fileMap)}</div>;
 }
 
-function dinh_dang(van_ban: string): ReactNode {
+function FileChip({ file }: { file: ProcedureDocument }) {
+  return (
+    <a
+      href={file.download_url}
+      download={file.file_name}
+      className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary-soft px-1.5 py-0.5 align-baseline text-[11.5px] font-medium text-primary no-underline hover:border-primary/60"
+      title={`Tải ${file.file_name}`}
+    >
+      <span className="material-symbols-outlined text-[14px]">attach_file</span>
+      Mẫu
+    </a>
+  );
+}
+
+function render_text(
+  chu: string,
+  fileMap?: Record<string, ProcedureDocument>,
+): ReactNode {
+  const parts = chu.split(/(\*\*.+?\*\*|\{\{file:[^}]+\}\})/g);
+  if (parts.length === 1) return chu;
+
+  return parts.map((part, index) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return <strong key={index}>{part.slice(2, -2)}</strong>;
+    }
+    const marker = part.match(/^\{\{file:([^}]+)\}\}$/);
+    if (marker) {
+      const file = fileMap?.[marker[1]];
+      return file ? <FileChip key={index} file={file} /> : null;
+    }
+    return part;
+  });
+}
+
+function dinh_dang(
+  van_ban: string,
+  fileMap?: Record<string, ProcedureDocument>,
+): ReactNode {
   const dong = van_ban.split("\n");
   const khoi: ReactNode[] = [];
   let gach_dau_dong: string[] = [];
@@ -21,7 +67,7 @@ function dinh_dang(van_ban: string): ReactNode {
     khoi.push(
       <ul key={`ds-${khoi.length}`} className="my-1 list-disc space-y-1 pl-5">
         {gach_dau_dong.map((muc, i) => (
-          <li key={i}>{in_dam(muc)}</li>
+          <li key={i}>{render_text(muc, fileMap)}</li>
         ))}
       </ul>,
     );
@@ -38,17 +84,10 @@ function dinh_dang(van_ban: string): ReactNode {
     if (!chu.trim()) continue;
     khoi.push(
       <p key={`p-${khoi.length}`} className="my-1">
-        {in_dam(chu)}
+        {render_text(chu, fileMap)}
       </p>,
     );
   }
   xong_danh_sach();
   return khoi;
-}
-
-/** Chỉ đổi `**chữ**` thành in đậm — mô hình dùng đúng một kiểu nhấn mạnh. */
-function in_dam(chu: string): ReactNode {
-  const phan = chu.split(/\*\*(.+?)\*\*/g);
-  if (phan.length === 1) return chu;
-  return phan.map((mot, i) => (i % 2 === 1 ? <strong key={i}>{mot}</strong> : mot));
 }

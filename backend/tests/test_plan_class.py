@@ -65,17 +65,16 @@ def test_not_found_is_clarify() -> None:
     assert plan_class is PlanClass.CLARIFY
 
 
-def test_no_subject_is_discovery() -> None:
+def test_no_subject_is_clarify() -> None:
     plan_class, _ = classify_request(_request(subject_ref=None), [])
-    assert plan_class is PlanClass.DISCOVERY
+    assert plan_class is PlanClass.CLARIFY
 
 
-def test_compare_is_unsupported() -> None:
-    plan_class, reason = classify_request(
+def test_compare_is_direct_when_two_procedures_are_grounded() -> None:
+    plan_class, _ = classify_request(
         _request(operation="compare"), [_Grounding(0, "resolved")]
     )
-    assert plan_class is PlanClass.UNSUPPORTED
-    assert "compare" in reason
+    assert plan_class is PlanClass.DIRECT
 
 
 def test_related_procedures_is_unsupported() -> None:
@@ -120,7 +119,7 @@ def test_unsupported_wins_over_clarify() -> None:
     frame = _frame(
         [
             _request(facet="requirements", subject_ref=0),
-            _request(operation="compare", subject_ref=None),
+            _request(operation="rank", subject_ref=None),
         ]
     )
     result = classify_turn(frame, [_Grounding(0, "ambiguous")])
@@ -131,11 +130,6 @@ def test_clarify_wins_over_composed() -> None:
     frame = _frame([_request(), _request(facet="processing_time")])
     result = classify_turn(frame, [_Grounding(0, "ambiguous")])
     assert result.plan_class is PlanClass.CLARIFY
-
-
-def test_single_discovery_turn() -> None:
-    frame = _frame([_request(subject_ref=None)])
-    assert classify_turn(frame, []).plan_class is PlanClass.DISCOVERY
 
 
 def test_out_of_scope_short_circuits() -> None:

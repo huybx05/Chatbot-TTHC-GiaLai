@@ -1,0 +1,6 @@
+BEGIN;
+
+ALTER TABLE faq
+    ALTER COLUMN procedure_code DROP NOT NULL;
+
+COMMIT;

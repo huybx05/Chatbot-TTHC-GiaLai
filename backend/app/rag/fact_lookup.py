@@ -69,8 +69,8 @@ from backend.app.db.postgres import engine
 
 logger = logging.getLogger(__name__)
 
-#: Cụm số **có thể** là mã thủ tục: 6–9 chữ số, cho phép **một** dấu chấm hoặc khoảng
-#: trắng giữa hai chữ số.
+#: Cụm số **có thể** là mã thủ tục: 6–9 chữ số, cho phép **một** dấu chấm, dấu phẩy
+#: hoặc khoảng trắng giữa hai chữ số.
 #:
 #: Rộng hơn mã thật (7 chữ số) để bắt được cả trường hợp gõ thiếu/thừa — nhờ vậy mới
 #: **báo được "không có"** thay vì im lặng tìm bằng từ khoá.
@@ -78,9 +78,9 @@ logger = logging.getLogger(__name__)
 #: Ranh giới ``(?<!\d)`` / ``(?!\d)`` để không cắt một phần của số dài hơn: số điện
 #: thoại ``0901234567`` (10 chữ số) không bị coi là mã.
 #:
-#: Không khớp ``102/2024`` vì ``/`` không nằm trong ``[.\s]`` — câu hỏi về số văn bản
+#: Không khớp ``102/2024`` vì ``/`` không nằm trong ``[.,\s]`` — câu hỏi về số văn bản
 #: không bị hiểu nhầm thành mã thủ tục.
-CODE_LIKE = re.compile(r"(?<!\d)\d(?:[.\s]?\d){5,8}(?!\d)")
+CODE_LIKE = re.compile(r"(?<!\d)\d(?:[.,\s]?\d){5,8}(?!\d)")
 
 
 @dataclass(frozen=True, slots=True)

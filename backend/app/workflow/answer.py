@@ -34,7 +34,9 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from backend.app.config import settings
+from backend.app.cost.service import record_usage
 from backend.app.rag import contracts
+from backend.app.workflow.fee_policy import fee_prompt_note
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,39 @@ Khi tin nhắn có khối `CÁC Ý CẦN TRẢ LỜI`, hãy trả lời **đúng
 * Ý ghi **cần làm rõ**: đề nghị người dùng chọn hoặc nêu rõ thêm.
 * Nếu chỉ trả lời được một phần, phải nói rõ phần nào chưa có; **không** viết như thể đã trả lời
   đầy đủ.
+
+## Giọng văn và độ rõ
+
+Trả lời tự nhiên, gần gũi, nhưng phải rõ đang nói về thủ tục nào. Khi câu hỏi hoặc ngữ cảnh có
+nhiều thủ tục, nêu tên ngắn hoặc mã của thủ tục đó; không dùng “thủ tục này” một cách mơ hồ
+khiến người dân nhầm sang thủ tục khác.
+
+Không viết “cổng ghi”, “dữ liệu ghi”, “nguồn ghi”. Hãy nói thẳng sự thật, hoặc dùng cách nói
+“thông tin đưa ra…”. Một ý chỉ có một thông tin thì viết một câu, không dùng bullet. Giữ đúng
+định dạng số của nguồn, ví dụ “07 ngày”, không tự đổi thành “7 ngày”.
+
+## Trả lời theo trường hợp
+
+Khi ngữ cảnh có nhiều trường hợp (case) của cùng một thủ tục, phải giữ đúng ranh giới từng
+trường hợp. Nếu người dùng hỏi chung, trả đủ tất cả trường hợp có trong ngữ cảnh, mỗi trường
+hợp một nhóm và nêu rõ tên trường hợp. Nếu người dùng hỏi một trường hợp cụ thể, chỉ trả lời
+trường hợp đó. Không lấy hồ sơ của trường hợp này bù sang trường hợp khác.
+
+Nếu hai ý trong câu hỏi dùng chung một nguồn dữ liệu, không được nói ý sau “chưa có dữ liệu”
+chỉ vì ý đó không có nguồn riêng. Chỉ nói thiếu khi trạng thái của chính ý đó là thiếu.
+
+Nếu ngữ cảnh có dòng `{{file:<file_id>}}`, phải giữ nguyên marker đó ngay sau dòng hồ sơ tương
+ứng; không đổi id, không bịa id, không chuyển marker sang dòng khác.
+
+## Điều kiện và so sánh
+
+Nếu câu hỏi nêu điều kiện như vùng khó khăn, nhà ở riêng lẻ, đối tượng cụ thể thì phải chọn
+đúng mốc tương ứng trong ngữ cảnh. Khi ngữ cảnh có mốc cơ bản và mốc tăng thêm, trình bày
+riêng từng mốc và nêu rõ trường hợp nào áp dụng mốc nào; không liệt kê hai mốc ngang hàng
+như hai phương án không có điều kiện.
+
+Nếu câu hỏi yêu cầu so sánh hai thủ tục, chỉ so sánh đúng hai thủ tục có trong ngữ cảnh,
+nêu cùng một khía cạnh cho cả hai, rồi kết luận chênh lệch nếu dữ liệu cho phép.
 
 ## Không đánh số nguồn trong câu trả lời
 
@@ -167,9 +202,12 @@ NHAN_KHIA_CANH = {
     "required_documents": "thành phần hồ sơ",
     "steps": "trình tự thực hiện",
     "submission_method": "cách thức nộp / nơi nộp",
+    "receiving_agency": "cơ quan tiếp nhận / nộp ở đâu",
     "processing_time": "thời hạn giải quyết",
     "fee": "phí, lệ phí",
     "result": "kết quả nhận được",
+    "result_delivery": "cách nhận kết quả",
+    "decision_number": "số quyết định ban hành",
     "legal_basis": "căn cứ pháp lý",
     "requirements": "điều kiện, đối tượng",
     "general_info": "thông tin chung",
@@ -284,6 +322,26 @@ def _chon_evidence(
     ]
     if not items:
         return []
+
+    # Dedupe trong cùng một case; giữ nội dung giống nhau ở các case khác nhau.
+    unique: list[dict[str, Any]] = []
+    seen: set[tuple[str, int]] = set()
+    for item in items:
+        metadata = item.get("metadata") or {}
+        key = (
+            " ".join(str(item.get("content") or "").split()),
+            int(metadata.get("case_order") or 0),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    items = unique
+
+    # Hồ sơ theo case phải giữ đủ case, không bị cắt bởi quota chung.
+    if any((m.get("metadata") or {}).get("case_order") for m in items):
+        toi_da = max(toi_da, len(items))
+
     if not requests:
         return [(None, muc) for muc in items[:toi_da]]
 
@@ -338,6 +396,40 @@ def _muc_dung_duoc(
     return [(i, muc) for i, (_, muc) in enumerate(_chon_evidence(evidence, toi_da=toi_da), 1)]
 
 
+def _clean_context(content: object, section_type: str = "") -> str:
+    """Bỏ metadata lặp của section trước khi đưa vào prompt."""
+    text = " ".join(str(content or "").split())
+    if " --- " in text:
+        text = text.split(" --- ", 1)[1].strip()
+    elif section_type.upper() not in {"METADATA", "FACT"}:
+        for prefix in (
+            "Tên thủ tục:",
+            "Lĩnh vực:",
+            "Cấp thực hiện:",
+            "Nguồn:",
+        ):
+            if text.startswith(prefix):
+                text = text[len(prefix) :].strip()
+    return text
+
+
+def _context_content(item: dict[str, Any]) -> str:
+    """Nội dung section + marker file mẫu để model gắn đúng dòng hồ sơ."""
+    text = _clean_context(item.get("content"))
+    metadata = item.get("metadata") or {}
+    attachments = metadata.get("attachments") or []
+    markers: list[str] = []
+    for attachment in attachments:
+        if not isinstance(attachment, dict):
+            continue
+        file_id = str(attachment.get("file_id") or "").strip()
+        if not file_id:
+            continue
+        name = str(attachment.get("file_name") or "").strip()
+        markers.append(f"File mẫu: {{{{file:{file_id}}}}} — {name}")
+    return "\n".join([text, *markers]) if markers else text
+
+
 def build_context(
     evidence: Sequence[dict[str, Any]],
     *,
@@ -356,7 +448,7 @@ def build_context(
         nhan: list[str] = []
         for _, muc in chon:
             dong.append(f"### {_nhan_muc(muc)}")
-            dong.append(" ".join(str(muc.get("content") or "").split()))
+            dong.append(_context_content(muc))
             dong.append("")
             nhan.append(nhan_trich_dan(muc))
         return "\n".join(dong).strip(), tuple(nhan)
@@ -380,7 +472,7 @@ def build_context(
             continue
         for muc in muc_cua_y:
             dong.append(_nhan_muc(muc))
-            dong.append(" ".join(str(muc.get("content") or "").split()))
+            dong.append(_context_content(muc))
             dong.append("")
             nhan.append(nhan_trich_dan(muc))
 
@@ -388,7 +480,7 @@ def build_context(
         dong.append("### Nguồn bổ sung")
         for muc in theo_yeu_cau[None]:
             dong.append(_nhan_muc(muc))
-            dong.append(" ".join(str(muc.get("content") or "").split()))
+            dong.append(_context_content(muc))
             dong.append("")
             nhan.append(nhan_trich_dan(muc))
 
@@ -426,12 +518,24 @@ def build_request_block(
     if not requests:
         return ""
     status = _status_map(coverage)
+    merged = {
+        index
+        for item in coverage
+        for index in (item.get("merged_from") or ())
+    }
     dong = ["CÁC Ý CẦN TRẢ LỜI (đúng thứ tự):"]
+    shown = 0
     for index, request in enumerate(requests):
+        if index in merged:
+            continue
+        shown += 1
         facet = str(request.get("facet") or "")
         nhan = NHAN_KHIA_CANH.get(facet, facet or "nội dung")
+        scenario = " ".join(str(request.get("scenario") or "").split())
+        suffix = f" — tình huống: {scenario}" if scenario else ""
         dong.append(
-            f"{index + 1}. {nhan} — {STATUS_TEXT.get(status.get(index, ''), 'chưa xác định')}"
+            f"{shown}. {nhan} — "
+            f"{STATUS_TEXT.get(status.get(index, ''), 'chưa xác định')}{suffix}"
         )
     return "\n".join(dong) + "\n\n"
 
@@ -448,6 +552,9 @@ FACET_HINTS: dict[str, tuple[str, ...]] = {
     "required_documents": ("ho so", "giay to"),
     "processing_time": ("thoi han", "bao lau"),
     "submission_method": ("cach nop", "noi nop"),
+    "receiving_agency": ("co quan tiep nhan", "nop o dau"),
+    "decision_number": ("so quyet dinh",),
+    "result_delivery": ("nhan ket qua",),
     "legal_basis": ("van ban", "can cu"),
     "result": ("ket qua",),
     "steps": ("trinh tu",),
@@ -494,12 +601,58 @@ def _denial_hits_covered(
     return False
 
 
+def _number_tokens(text: str) -> list[int]:
+    """Số trong câu trả lời, bỏ URL và mã thủ tục."""
+    clean = re.sub(r"https?://\S+", " ", str(text or ""))
+    clean = re.sub(r"\[\d+\]", " ", clean)
+    clean = re.sub(r"\b\d{1,3}[.,]\d{5,6}\b", " ", clean)
+    values: list[int] = []
+    for match in re.finditer(r"\b\d{1,3}(?:[.,]\d{3})*(?:[.,]\d+)?\b", clean):
+        raw = match.group(0).replace(".", "").replace(",", "")
+        if raw.isdigit():
+            values.append(int(raw))
+    return values
+
+
+def _number_bases(evidence: Sequence[dict[str, Any]]) -> set[int]:
+    values: set[int] = set()
+    for item in evidence:
+        values.update(_number_tokens(str(item.get("content") or "")))
+    return values
+
+
+def validate_number_claims(
+    text: str, evidence: Sequence[dict[str, Any]]
+) -> list[str]:
+    """Bắt số trong câu trả lời không có trong evidence.
+
+    Cho phép tổng/hiệu của hai mốc evidence (ví dụ 9 + 10 = 19 ngày), vì câu trả lời
+    hợp lệ thường phải cộng mốc cơ bản với mốc tăng thêm.
+    """
+    bases = _number_bases(evidence)
+    if not bases:
+        return []
+    allowed = set(bases)
+    values = list(bases)
+    for index, first in enumerate(values):
+        for second in values[index + 1 :]:
+            allowed.add(first + second)
+            allowed.add(abs(first - second))
+    return [
+        f"unsupported_number:{number}"
+        for number in _number_tokens(text)
+        if number not in allowed
+    ]
+
+
 def verify_contract(
     text: str,
     evidence: Sequence[dict[str, Any]],
     *,
     thieu: Sequence[str] = (),
     covered_facets: Sequence[str] = (),
+    requests: Sequence[dict[str, Any]] = (),
+    coverage: Sequence[dict[str, Any]] = (),
 ) -> list[str]:
     """Kiểm tra hợp đồng trả lời sau khi sinh. Trả danh sách lỗi (rỗng = đạt).
 
@@ -510,6 +663,8 @@ def verify_contract(
     clean = " ".join(str(text or "").split())
     if not clean:
         return ["empty_answer"]
+    from backend.app.text_norm import strip_accents
+
     has_denial = bool(DENIAL_PATTERN.search(clean))
     if has_denial and evidence and covered_facets and _denial_hits_covered(
         clean, covered_facets, thieu
@@ -517,6 +672,17 @@ def verify_contract(
         issues.append("denies_available_evidence")
     if thieu and not has_denial:
         issues.append("omits_missing_data")
+
+    status = _status_map(coverage)
+    for index, request in enumerate(requests):
+        if status.get(index) != "covered":
+            continue
+        facet = str(request.get("facet") or "")
+        label = NHAN_KHIA_CANH.get(facet, facet)
+        phrases = _facet_phrases(label, facet)
+        if phrases and not any(phrase in strip_accents(clean).lower() for phrase in phrases):
+            issues.append(f"missing_covered_facet:{facet}")
+    issues.extend(validate_number_claims(clean, evidence))
     return issues
 
 
@@ -568,6 +734,7 @@ def build_messages(
     requests: Sequence[dict[str, Any]] = (),
     coverage: Sequence[dict[str, Any]] = (),
     strict_note: str = "",
+    preferred_name: str = "",
 ) -> list[dict[str, str]]:
     """Tin nhắn gửi mô hình: lời dẫn + ngữ cảnh + **danh sách mục thiếu** + câu hỏi.
 
@@ -576,6 +743,15 @@ def build_messages(
     có gì; để nó tự kết luận "chưa ghi nhận" chính là lỗi đã đo được.
     """
     ngu_canh, _ = build_context(evidence, requests=requests, coverage=coverage)
+    fee_note = fee_prompt_note(list(evidence))
+    fee_block = f"{fee_note}\n\n" if fee_note else ""
+    name_block = (
+        f"CÁCH XƯNG HÔ: Người dùng tự giới thiệu tên **{preferred_name}**. "
+        "Khi trả lời, có thể xưng hô bằng tên này thay cho “bạn” nếu câu văn tự nhiên. "
+        "Không sửa tên văn bản, trích dẫn pháp luật hoặc nội dung nguồn.\n\n"
+        if preferred_name.strip()
+        else ""
+    )
     khoi_thieu = ""
     if thieu and not requests:
         nhan = ", ".join(NHAN_KHIA_CANH.get(x, x) for x in thieu)
@@ -585,7 +761,9 @@ def build_messages(
         {
             "role": "user",
             "content": (
+                f"{name_block}"
                 f"{build_request_block(requests, coverage)}"
+                f"{fee_block}"
                 "NGỮ CẢNH:\n"
                 f"{ngu_canh or '(không có mục ngữ cảnh nào)'}\n\n"
                 f"{khoi_thieu}"
@@ -660,6 +838,7 @@ async def sinh(
     requests: Sequence[dict[str, Any]] = (),
     coverage: Sequence[dict[str, Any]] = (),
     strict_note: str = "",
+    preferred_name: str = "",
     timeout: float = TIMEOUT_S,
 ) -> AnswerResult:
     """Sinh câu trả lời từ **bằng chứng**. Ném :class:`AnswerError` nếu không dùng được.
@@ -675,6 +854,7 @@ async def sinh(
 
     messages = build_messages(
         question, evidence, thieu=thieu, requests=requests, coverage=coverage,
+        preferred_name=preferred_name,
     )
     nhan = build_citations(evidence, requests=requests, coverage=coverage)
     bat_dau = time.perf_counter()
@@ -705,6 +885,16 @@ async def sinh(
         raise AnswerError("mô hình trả chuỗi rỗng")
 
     su_dung = getattr(phan_hoi, "usage", None)
+    await record_usage(
+        stage="answer",
+        model=settings.synthesizer_model_name,
+        input_tokens=int(getattr(su_dung, "prompt_tokens", 0) or 0),
+        cached_tokens=int(
+            getattr(getattr(su_dung, "prompt_tokens_details", None), "cached_tokens", 0)
+            or 0
+        ),
+        output_tokens=int(getattr(su_dung, "completion_tokens", 0) or 0),
+    )
     return AnswerResult(
         text=text,
         citations=nhan,
@@ -723,6 +913,7 @@ async def sinh_stream(
     requests: Sequence[dict[str, Any]] = (),
     coverage: Sequence[dict[str, Any]] = (),
     strict_note: str = "",
+    preferred_name: str = "",
     timeout: float = TIMEOUT_S,
 ) -> AsyncIterator[str]:
     """Sinh câu trả lời và **phát ra từng mẩu** khi mô hình viết.
@@ -742,28 +933,42 @@ async def sinh_stream(
 
     messages = build_messages(
         question, evidence, thieu=thieu, requests=requests, coverage=coverage,
+        preferred_name=preferred_name,
     )
     client = _client()
 
     try:
-        stream = await asyncio.wait_for(
-            client.chat.completions.create(
-                model=settings.synthesizer_model_name,
-                messages=messages,  # type: ignore[arg-type]
-                temperature=settings.synthesizer_temperature,
-                max_tokens=settings.synthesizer_max_tokens,
-                stream=True,
-            ),
-            timeout=timeout,
-        )
+        kwargs: dict[str, Any] = {
+            "model": settings.synthesizer_model_name,
+            "messages": messages,
+            "temperature": settings.synthesizer_temperature,
+            "max_tokens": settings.synthesizer_max_tokens,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        try:
+            stream = await asyncio.wait_for(
+                client.chat.completions.create(**kwargs),
+                timeout=timeout,
+            )
+        except Exception as exc:  # noqa: BLE001 — provider không hỗ trợ stream usage
+            if "stream_options" not in f"{type(exc).__name__} {exc}".lower():
+                raise
+            kwargs.pop("stream_options", None)
+            stream = await asyncio.wait_for(
+                client.chat.completions.create(**kwargs),
+                timeout=timeout,
+            )
     except TimeoutError as exc:
         raise AnswerError(f"quá hạn {timeout:.0f}s") from exc
     except Exception as exc:  # noqa: BLE001 — mạng/API
         raise AnswerError(f"{type(exc).__name__}: {str(exc)[:160]}") from exc
 
     da_phat = False
+    stream_usage: Any = None
     try:
         async for phan in stream:
+            stream_usage = getattr(phan, "usage", None) or stream_usage
             try:
                 delta = phan.choices[0].delta.content or ""
             except (AttributeError, IndexError):
@@ -776,6 +981,21 @@ async def sinh_stream(
             raise AnswerError(f"{type(exc).__name__}: {str(exc)[:160]}") from exc
         # Đã phát được một phần: dừng êm, người dùng thấy phần đã có thay vì mất trắng.
         logger.warning("Stream đứt giữa dòng: %s", str(exc)[:120])
+
+    await record_usage(
+        stage="answer",
+        model=settings.synthesizer_model_name,
+        input_tokens=int(getattr(stream_usage, "prompt_tokens", 0) or 0),
+        cached_tokens=int(
+            getattr(
+                getattr(stream_usage, "prompt_tokens_details", None),
+                "cached_tokens",
+                0,
+            )
+            or 0
+        ),
+        output_tokens=int(getattr(stream_usage, "completion_tokens", 0) or 0),
+    )
 
     if not da_phat:
         raise AnswerError("mô hình không phát ra nội dung nào")

@@ -13,9 +13,11 @@ Bốn thứ dễ hỏng mà không ai thấy nếu chỉ nhìn mã:
 from __future__ import annotations
 
 import json
+from uuid import UUID
 
 import pytest
 from backend.app.api import chat as chat_api
+from backend.app.documents import repository
 from backend.app.main import app
 from backend.app.rag import retrieval
 from backend.app.workflow import answer as answer_module
@@ -46,6 +48,21 @@ def _ket_qua(**ghi_de: object) -> dict:
         "resolution": {},
     }
     goc.update(ghi_de)
+    if "answerable" not in ghi_de:
+        goc["answerable"] = bool(
+            goc.get("outcome") == "answered"
+            and (goc.get("citations") or goc.get("evidence") or goc.get("answer"))
+        )
+    resolution = goc.get("resolution")
+    if goc.get("answerable") and isinstance(resolution, dict) and resolution.get("code"):
+        goc.setdefault(
+            "answered_procedure",
+            {
+                "code": str(resolution["code"]),
+                "name": str(resolution.get("name") or resolution["code"]),
+                "source": "resolution",
+            },
+        )
     return goc
 
 
@@ -134,7 +151,8 @@ def test_hoi_lai_thi_status_clarify_khong_phai_abstained(monkeypatch: pytest.Mon
     du_lieu = client.post("/chat", json={"question": "thời hạn bao lâu?"}).json()
     assert du_lieu["status"] == "clarify"
     assert du_lieu["abstained"] is True  # giữ cho client cũ
-    assert du_lieu["answer"] == "Bạn muốn hỏi thủ tục nào?"
+    assert du_lieu["answer"] == chat_api.CLARIFY_REPHRASE_ANSWER
+    assert du_lieu["options"] == []
 
 
 def test_tu_choi_thi_status_abstained(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,10 +197,9 @@ def test_lua_chon_tra_ve_dang_mang(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     du_lieu = client.post("/chat", json={"question": "đổi sổ đỏ"}).json()
 
-    assert [o["value"] for o in du_lieu["options"]] == ["1.115350", "1.115345"]
-    assert [o["label"] for o in du_lieu["options"]] == ["Cấp lại", "Cấp đổi"]
-    # Văn bản vẫn kèm lựa chọn, cho giao diện không đọc `options`.
-    assert "Cấp lại" in du_lieu["answer"]
+    assert du_lieu["options"] == []
+    assert du_lieu["answer"] == chat_api.CLARIFY_REPHRASE_ANSWER
+    assert "chưa hiểu" in du_lieu["answer"]
 
 
 def test_cau_tra_loi_duoc_thi_khong_co_lua_chon(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -336,6 +353,7 @@ def _gan_stream(monkeypatch: pytest.MonkeyPatch, mau: list[str] | None = None) -
         generate: bool = True,
         log_trace: bool = True,
         source: str = "api",
+        **_kwargs: object,
     ) -> dict:
         return _ket_qua(
             resolution={"code": "1.001699", "name": "Cấp GXN"},
@@ -352,7 +370,9 @@ def _gan_stream(monkeypatch: pytest.MonkeyPatch, mau: list[str] | None = None) -
             coverage=[{"request_index": 0, "status": "covered", "facet": "fee"}],
         )
 
-    async def fake_stream(_q, _e, *, thieu=(), requests=(), coverage=(), timeout=0.0):
+    async def fake_stream(
+        _q, _e, *, thieu=(), requests=(), coverage=(), timeout=0.0, preferred_name=""
+    ):
         dem["coverage"] = list(coverage)
         dem["requests"] = list(requests)
         for manh in mau or ["Thủ tục ", "**miễn phí**", "."]:
@@ -379,7 +399,22 @@ def test_sse_phat_meta_roi_tung_mau_roi_done(monkeypatch: pytest.MonkeyPatch) ->
 
     ghep = "".join(d["text"] for t, d in su_kien if t == "delta")
     assert ghep == "Thủ tục **miễn phí**."
-    assert su_kien[-1][1] == {"answer": ghep, "streamed": True}
+    assert su_kien[-1][1] == {"answer": ghep, "streamed": True, "message_id": None}
+
+
+def test_sse_persist_cau_tra_loi_da_stream(monkeypatch: pytest.MonkeyPatch) -> None:
+    _gan_stream(monkeypatch)
+    saved: list[tuple[str, str]] = []
+
+    async def fake_persist(*_args, role: str, content: str, **_kwargs):
+        saved.append((role, content))
+        return True
+
+    monkeypatch.setattr(chat_api, "_persist_message", fake_persist)
+    _doc_sse("/chat/stream", "phí bao nhiêu?")
+
+    assistant = [content for role, content in saved if role == "assistant"]
+    assert assistant == ["Thủ tục **miễn phí**."]
 
 
 def test_sse_cau_hoi_lai_khong_co_delta(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -392,6 +427,7 @@ def test_sse_cau_hoi_lai_khong_co_delta(monkeypatch: pytest.MonkeyPatch) -> None
         generate: bool = True,
         log_trace: bool = True,
         source: str = "api",
+        **_kwargs: object,
     ) -> dict:
         return _ket_qua(
             outcome="clarify",
@@ -407,9 +443,9 @@ def test_sse_cau_hoi_lai_khong_co_delta(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert [t for t, _ in su_kien] == ["start", "meta", "done"]
     assert su_kien[1][1]["status"] == "clarify"
-    assert su_kien[1][1]["options"][0]["value"] == "1.115350"
+    assert su_kien[1][1]["options"] == []
     assert su_kien[2][1]["streamed"] is False
-    assert "Bạn muốn hỏi thủ tục nào?" in su_kien[2][1]["answer"]
+    assert su_kien[2][1]["answer"] == chat_api.CLARIFY_REPHRASE_ANSWER
 
 
 def test_sse_loi_truoc_khi_phat_thi_tra_cau_du_phong(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -422,6 +458,7 @@ def test_sse_loi_truoc_khi_phat_thi_tra_cau_du_phong(monkeypatch: pytest.MonkeyP
         generate: bool = True,
         log_trace: bool = True,
         source: str = "api",
+        **_kwargs: object,
     ) -> dict:
         return _ket_qua(
             resolution={"code": "1.001699", "name": "Cấp GXN"},
@@ -430,7 +467,9 @@ def test_sse_loi_truoc_khi_phat_thi_tra_cau_du_phong(monkeypatch: pytest.MonkeyP
             citations=[],
         )
 
-    async def hong(_q, _e, *, thieu=(), requests=(), coverage=(), timeout=0.0):
+    async def hong(
+        _q, _e, *, thieu=(), requests=(), coverage=(), timeout=0.0, preferred_name=""
+    ):
         raise answer_module.AnswerError("403 quota")
         yield ""  # pragma: no cover — để hàm là generator
 
@@ -453,6 +492,7 @@ def test_sse_cau_lap_lai_phat_lai_thanh_tung_mau(monkeypatch: pytest.MonkeyPatch
         generate: bool = True,
         log_trace: bool = True,
         source: str = "api",
+        **_kwargs: object,
     ) -> dict:
         dem["lan"] += 1
         return _ket_qua(
@@ -460,7 +500,9 @@ def test_sse_cau_lap_lai_phat_lai_thanh_tung_mau(monkeypatch: pytest.MonkeyPatch
             evidence=[{"kind": "chunk", "procedure_code": "1.001699", "content": "Miễn phí."}],
         )
 
-    async def fake_stream(_q, _e, *, thieu=(), requests=(), coverage=(), timeout=0.0):
+    async def fake_stream(
+        _q, _e, *, thieu=(), requests=(), coverage=(), timeout=0.0, preferred_name=""
+    ):
         yield "Miễn phí."
 
     monkeypatch.setattr(retrieval, "retrieve", fake_retrieve)
@@ -530,3 +572,148 @@ def test_sse_truyen_coverage_vao_buoc_sinh(monkeypatch: pytest.MonkeyPatch) -> N
     assert dem["coverage"] == [
         {"request_index": 0, "status": "covered", "facet": "fee"}
     ]
+
+
+def _file_mau() -> repository.DocumentRecord:
+    return repository.DocumentRecord(
+        id=UUID("4a5bf271-241c-47b0-a497-c77b85e0bb94"),
+        procedure_code="1.001699",
+        document_name="Đơn đề nghị",
+        file_name="Mus01 don.docx",
+        mime_type=(
+            "application/vnd.openxmlformats-officedocument."
+            "wordprocessingml.document"
+        ),
+        size_bytes=22645,
+        checksum_sha256="a" * 64,
+        object_key="procedures/1.001699/a.docx",
+    )
+
+
+def test_ho_so_co_file_thi_tra_kem_documents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _gan(
+        monkeypatch,
+        _ket_qua(
+            answer="Hồ sơ gồm Đơn đề nghị.",
+            resolution={"code": "1.001699", "name": "Cấp GXN"},
+            coverage=[
+                {
+                    "request_index": 0,
+                    "status": "covered",
+                    "facet": "required_documents",
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.app.documents.repository.list_documents",
+        lambda code: [_file_mau()],
+    )
+
+    du_lieu = client.post("/chat", json={"question": "hồ sơ gồm gì?"}).json()
+
+    assert len(du_lieu["documents"]) == 1
+    assert du_lieu["documents"][0]["file_name"] == "Mus01 don.docx"
+    assert du_lieu["documents"][0]["download_url"].endswith(
+        "/documents/4a5bf271-241c-47b0-a497-c77b85e0bb94/download"
+    )
+
+
+def test_khong_hoi_ho_so_thi_khong_tra_documents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _gan(
+        monkeypatch,
+        _ket_qua(
+            answer="Miễn phí.",
+            resolution={"code": "1.001699", "name": "Cấp GXN"},
+            coverage=[
+                {"request_index": 0, "status": "covered", "facet": "fee"}
+            ],
+        ),
+    )
+    called = {"value": False}
+
+    def fake_list(code: str):
+        called["value"] = True
+        return [_file_mau()]
+
+    monkeypatch.setattr(
+        "backend.app.documents.repository.list_documents",
+        fake_list,
+    )
+
+    du_lieu = client.post("/chat", json={"question": "phí bao nhiêu?"}).json()
+
+    assert du_lieu["documents"] == []
+    assert called["value"] is False
+
+
+def test_ho_so_khong_co_file_thi_tra_mang_rong(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _gan(
+        monkeypatch,
+        _ket_qua(
+            resolution={"code": "1.001699", "name": "Cấp GXN"},
+            coverage=[
+                {
+                    "request_index": 0,
+                    "status": "covered",
+                    "facet": "required_documents",
+                }
+            ],
+        ),
+    )
+    monkeypatch.setattr(
+        "backend.app.documents.repository.list_documents",
+        lambda code: [],
+    )
+
+    du_lieu = client.post("/chat", json={"question": "hồ sơ gồm gì?"}).json()
+
+    assert du_lieu["documents"] == []
+
+
+def test_sse_meta_co_documents_khi_hoi_ho_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_retrieve(
+        _question: str,
+        **_kwargs,
+    ) -> dict:
+        return _ket_qua(
+            resolution={"code": "1.001699", "name": "Cấp GXN"},
+            evidence=[
+                {"kind": "chunk", "procedure_code": "1.001699", "content": "Đơn."}
+            ],
+            coverage=[
+                {
+                    "request_index": 0,
+                    "status": "covered",
+                    "facet": "required_documents",
+                }
+            ],
+        )
+
+    async def fake_stream(
+        _q, _e, *, thieu=(), requests=(), coverage=(), timeout=0.0, preferred_name=""
+    ):
+        yield "Hồ sơ gồm Đơn đề nghị."
+
+    monkeypatch.setattr(retrieval, "retrieve", fake_retrieve)
+    monkeypatch.setattr(answer_module, "sinh_stream", fake_stream)
+    monkeypatch.setattr(
+        "backend.app.documents.repository.list_documents",
+        lambda code: [_file_mau()],
+    )
+
+    su_kien = _doc_sse("/chat/stream", "hồ sơ gồm gì?")
+
+    assert su_kien[1][0] == "meta"
+    final_meta = [
+        data for event, data in su_kien if event == "meta" and data.get("documents")
+    ][-1]
+    assert final_meta["documents"][0]["file_name"] == "Mus01 don.docx"

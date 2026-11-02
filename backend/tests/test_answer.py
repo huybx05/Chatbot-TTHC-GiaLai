@@ -65,6 +65,23 @@ def test_ngu_canh_gop_khoang_trang() -> None:
     assert "Giấy tờ gồm 3 loại" in van_ban
 
 
+def test_request_block_giu_scenario_va_huong_dan_dieu_kien() -> None:
+    block = ans.build_request_block(
+        [
+            {
+                "text": "thời hạn tối đa",
+                "facet": "processing_time",
+                "scenario": "xã vùng cao đặc biệt khó khăn",
+                "subject_ref": 0,
+            }
+        ]
+    )
+
+    assert "tình huống: xã vùng cao đặc biệt khó khăn" in block
+    assert "Điều kiện và so sánh" in ans.SYSTEM_PROMPT
+    assert "so sánh hai thủ tục" in ans.SYSTEM_PROMPT
+
+
 # ── ② Trích dẫn cùng thứ tự với số hiệu ─────────────────────────────────
 
 

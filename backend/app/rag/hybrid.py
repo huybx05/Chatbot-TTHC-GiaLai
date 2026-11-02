@@ -493,6 +493,7 @@ async def hybrid(
     question: str,
     *,
     vector: list[float],
+    keyword_question: str | None = None,
     top_k: int = DEFAULT_BRANCH_K,
     codes: list[str] | None = None,
     use_rerank: bool = False,
@@ -571,6 +572,7 @@ async def hybrid(
     # * ``da_dinh_danh`` — **quyền bỏ cổng**. Chỉ mã đã xác thực (tầng ① tra PostgreSQL) mới
     #   có quyền đó.
     loc = list(codes) if codes else extract_codes(question)
+    keyword_query = (keyword_question or question).strip() or question
 
     # ── ĐÃ ĐỊNH DANH ĐƯỢC THỦ TỤC → câu hỏi mặc nhiên trong phạm vi, bỏ cổng ──
     # ① có mã thủ tục tồn tại (đã tra PostgreSQL ở tầng trên).
@@ -591,7 +593,7 @@ async def hybrid(
 
     loi: list[str] = []
     keyword_hits, vector_hits = await asyncio.gather(
-        keyword_only(question, top_k=top_k, codes=loc, errors=loi),
+        keyword_only(keyword_query, top_k=top_k, codes=loc, errors=loi),
         vector_only(vector, top_k=top_k, codes=loc or None, errors=loi),
     )
 

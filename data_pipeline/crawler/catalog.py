@@ -57,16 +57,15 @@ class CatalogEntry:
 
 
 def parse_group_from_sheet_name(sheet_name: str) -> str:
-    """Suy ra mã nhóm lĩnh vực từ tên sheet.
+    """Suy ra mã nhóm lĩnh vực từ tên sheet, **bỏ số thứ tự**.
 
-    ``"02. TAI_NGUYEN_MOI_TRUONG"`` -> ``"02. TAI_NGUYEN_MOI_TRUONG"``
-    ``"2.CONG_THUONG_NANG_LUONG"``  -> ``"02. CONG_THUONG_NANG_LUONG"``
+    ``"02. TAI_NGUYEN_MOI_TRUONG"`` -> ``"TAI_NGUYEN_MOI_TRUONG"``
+    ``"2.CONG_THUONG_NANG_LUONG"``  -> ``"CONG_THUONG_NANG_LUONG"``
     """
     match = GROUP_NAME_PATTERN.match(sheet_name)
     if not match:
         return sheet_name.strip()
-    number, name = match.group(1), match.group(2).strip()
-    return f"{int(number):02d}. {name}"
+    return match.group(2).strip()
 
 
 def list_group_sheets(excel_path: Path) -> list[str]:

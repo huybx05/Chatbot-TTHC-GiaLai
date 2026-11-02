@@ -100,8 +100,9 @@ def slug_tieng_viet(name: str) -> str:
 def output_path(base: Path, entry: CatalogEntry, filename: str) -> Path:
     """Đường dẫn đầu ra: ``<domain_group>/<source_field slug>/<tên file>``.
 
-    ``domain_group`` giữ nguyên dạng ``"01. AN_NINH_TRAT_TU_CU_TRU"``; ``source_field``
-    được đổi sang không dấu để tên thư mục an toàn, ví dụ ``Dang_ki_quan_ly_cu_tru``.
+    ``domain_group`` là tên nhóm **không kèm số thứ tự**
+    (ví dụ ``"AN_NINH_TRAT_TU_CU_TRU"``); ``source_field`` được đổi sang không dấu để tên
+    thư mục an toàn, ví dụ ``Dang_ki_quan_ly_cu_tru``.
     """
     folder = base / safe_path_component(entry.domain_group)
     folder = folder / slug_tieng_viet(entry.source_field)
