@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
 import { getAdminSystemStatus, type AdminSystemStatus } from "../../api/admin";
+import { chatHomeUrl } from "../../api/config";
 
 const NAV_ITEMS = [
   { to: "/admin", label: "Tổng quan", icon: "dashboard", end: true },
@@ -74,13 +75,13 @@ export default function AdminLayout({ onLogout }: AdminLayoutProps) {
         </nav>
 
         <div className="space-y-3 border-t border-border-color p-3">
-          <NavLink
-            to="/"
+          <a
+            href={chatHomeUrl()}
             className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-text-secondary hover:bg-hover-item"
           >
             <span className="material-symbols-outlined text-[18px]">arrow_back</span>
             Giao diện chatbot
-          </NavLink>
+          </a>
           <button
             className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-danger hover:bg-danger-surface"
             type="button"

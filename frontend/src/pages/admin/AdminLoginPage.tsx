@@ -1,6 +1,7 @@
 import { useState } from "react";
 
 import { login, logout, type AuthResponse } from "../../api/auth";
+import { chatHomeUrl } from "../../api/config";
 
 type AdminLoginPageProps = {
   onLogin: (session: AuthResponse) => void;
@@ -106,7 +107,7 @@ export default function AdminLoginPage({ onLogin }: AdminLoginPageProps) {
 
               <a
                 className="mt-4 flex items-center justify-center gap-2 text-sm font-semibold text-text-secondary hover:text-primary"
-                href="/"
+                href={chatHomeUrl()}
               >
                 Quay lại chatbot
               </a>

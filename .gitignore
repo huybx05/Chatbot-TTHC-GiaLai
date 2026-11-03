@@ -98,3 +98,7 @@ short-term memory du an truoc.md
 # SeaweedFS credentials
 seaweedfs/s3.json
 
+# Local database dumps/backups
+backups/
+*.dump
+
