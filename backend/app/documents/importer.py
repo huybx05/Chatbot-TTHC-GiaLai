@@ -43,6 +43,27 @@ CFB_MIME_BY_EXTENSION = {
     ".xls": "application/vnd.ms-excel",
 }
 
+#: Một số file trên cổng DVC trả Content-Type chung chung.
+#: Chỉ chuẩn hoá theo đuôi đã được validate trước khi gọi hàm này.
+GENERIC_MIME_TYPES = {
+    "application/octet-stream",
+    "binary/octet-stream",
+}
+
+GENERIC_MIME_BY_EXTENSION = {
+    ".doc": "application/msword",
+    ".docx": (
+        "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document"
+    ),
+    ".xls": "application/vnd.ms-excel",
+    ".xlsx": (
+        "application/vnd.openxmlformats-officedocument."
+        "spreadsheetml.sheet"
+    ),
+    ".pdf": "application/pdf",
+}
+
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -157,9 +178,17 @@ def validate_extension(file_name: str) -> str:
 
 
 def validate_content_type(content_type: str, extension: str) -> str:
-    """Chuẩn hoá MIME; chấp nhận CFB cho .doc/.xls cũ."""
+    """Chuẩn hoá MIME; chấp nhận CFB và octet-stream theo đuôi file."""
     if content_type in CFB_MIME_TYPES:
         normalized = CFB_MIME_BY_EXTENSION.get(extension)
+        if normalized is None:
+            raise ValueError(
+                f"Content-Type {content_type} không hợp lệ cho {extension}"
+            )
+        return normalized
+
+    if content_type in GENERIC_MIME_TYPES:
+        normalized = GENERIC_MIME_BY_EXTENSION.get(extension)
         if normalized is None:
             raise ValueError(
                 f"Content-Type {content_type} không hợp lệ cho {extension}"

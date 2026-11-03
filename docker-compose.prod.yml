@@ -107,7 +107,8 @@ services:
       test: ["CMD-SHELL", "cypher-shell -u neo4j -p \"$$NEO4J_PASSWORD\" 'RETURN 1' >/dev/null 2>&1 || exit 1"]
       interval: 15s
       timeout: 5s
-      retries: 10
+      retries: 20
+      start_period: 90s
     logging: *default-logging
 
   elasticsearch:
@@ -130,7 +131,8 @@ services:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:9200/_cluster/health >/dev/null || exit 1"]
       interval: 15s
       timeout: 5s
-      retries: 10
+      retries: 20
+      start_period: 90s
     logging: *default-logging
 
   backend:

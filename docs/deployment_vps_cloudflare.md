@@ -205,6 +205,67 @@ docker --version
 docker compose version
 ```
 
+Kiểm tra quyền Docker của user:
+
+```bash
+groups
+docker info
+```
+
+Kỳ vọng `groups` có:
+
+```text
+deploy sudo users docker
+```
+
+Nếu `docker info` báo:
+
+```text
+permission denied while trying to connect to the Docker daemon socket
+```
+
+thì thêm user vào group `docker` và đăng nhập lại:
+
+```bash
+sudo usermod -aG docker deploy
+newgrp docker
+# hoặc logout rồi ssh lại
+```
+
+Kiểm tra lại:
+
+```bash
+docker info
+```
+
+## Nếu xóa và tạo lại user `deploy`
+
+```bash
+sudo adduser deploy
+sudo usermod -aG sudo deploy
+sudo usermod -aG docker deploy
+```
+
+Sau đó copy SSH key và đăng nhập lại:
+
+```bash
+sudo mkdir -p /home/deploy/.ssh
+sudo cp /root/.ssh/authorized_keys /home/deploy/.ssh/authorized_keys
+sudo chown -R deploy:deploy /home/deploy/.ssh
+sudo chmod 700 /home/deploy/.ssh
+sudo chmod 600 /home/deploy/.ssh/authorized_keys
+
+ssh deploy@103.199.11.73
+```
+
+Kiểm tra:
+
+```bash
+id deploy
+groups
+docker info
+```
+
 ---
 
 # 3. Đưa code lên VPS
@@ -377,6 +438,52 @@ docker images | grep tracuutthc
 ---
 
 # 5. Khởi động hạ tầng
+
+## 5.1 Đồng bộ phiên bản với local
+
+`docker-compose.prod.yml` đang pin:
+
+```text
+postgres:18-alpine
+elasticsearch:9.5.4
+qdrant:v1.19.0
+seaweedfs:4.50
+```
+
+Nếu VPS đang có volume tạo bởi phiên bản cũ:
+
+```text
+PostgreSQL 16
+Elasticsearch 8
+Qdrant 1.15
+```
+
+thì **không được dùng lại volume cũ** với image mới.
+
+Với VPS mới hoặc dữ liệu chưa cần giữ:
+
+```bash
+docker compose -f docker-compose.prod.yml down
+
+docker volume rm \
+  tracuutthc_postgres-data \
+  tracuutthc_elasticsearch-data \
+  tracuutthc_qdrant-data
+```
+
+Không xóa các volume sau nếu muốn giữ dữ liệu:
+
+```text
+tracuutthc_seaweedfs-data
+tracuutthc_neo4j-data
+tracuutthc_neo4j-logs
+```
+
+Nếu có dữ liệu cần giữ, phải dump/backup trước rồi restore sau.
+
+> PostgreSQL 18 dùng volume `/var/lib/postgresql`, không phải
+> `/var/lib/postgresql/data`. Compose đã cấu hình đúng; nếu tự sửa file,
+> giữ nguyên mount này.
 
 Khởi động database, search store và SeaweedFS trước:
 
@@ -1107,6 +1214,28 @@ NEO4J_DATABASE=neo4j
 ```
 
 Nếu đổi sang `chatbot`, phải dùng Neo4j Enterprise hoặc tạo database trước.
+
+### Neo4j unhealthy
+
+Kiểm tra:
+
+```bash
+docker compose -f docker-compose.prod.yml logs --tail=100 neo4j
+docker compose -f docker-compose.prod.yml exec -T neo4j \
+  cypher-shell -u neo4j -p '<NEO4J_PASSWORD>' 'RETURN 1'
+```
+
+Nếu báo `Unauthorized` / `authentication failure`, volume Neo4j cũ có mật khẩu khác.
+Reset volume Neo4j (mất đồ thị, sẽ rebuild từ PostgreSQL):
+
+```bash
+docker compose -f docker-compose.prod.yml stop neo4j
+docker compose -f docker-compose.prod.yml rm -sf neo4j
+docker volume rm tracuutthc_neo4j-data tracuutthc_neo4j-logs
+docker compose -f docker-compose.prod.yml up -d neo4j
+```
+
+Nếu container vừa khởi động, chờ 60–90 giây rồi kiểm tra lại.
 
 ## Không đăng nhập được admin
 

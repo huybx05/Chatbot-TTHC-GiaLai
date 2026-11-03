@@ -73,6 +73,18 @@ def test_validate_content_type_giu_nguyen_docx() -> None:
     assert validate_content_type(content_type, ".docx") == content_type
 
 
+def test_validate_content_type_chuan_hoa_octet_stream_theo_duoi() -> None:
+    assert (
+        validate_content_type("application/octet-stream", ".docx")
+        == "application/vnd.openxmlformats-officedocument."
+        "wordprocessingml.document"
+    )
+    assert (
+        validate_content_type("application/octet-stream", ".pdf")
+        == "application/pdf"
+    )
+
+
 def test_import_attachments_giu_cung_file_id_o_thu_tuc_khac(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
