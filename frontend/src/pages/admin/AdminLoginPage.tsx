@@ -55,8 +55,8 @@ export default function AdminLoginPage({ onLogin }: AdminLoginPageProps) {
             className="size-12 rounded-xl bg-card-surface object-contain p-2 shadow-sm ring-1 ring-border-color"
           />
           <div>
-            <p className="text-lg font-bold">Chat TTHC Admin</p>
-            <p className="text-sm text-text-secondary">Giám sát hệ thống nội bộ</p>
+            <p className="text-lg font-bold">Chatbot Gia Lai Admin</p>
+            <p className="text-sm text-text-secondary">Giám sát hệ thống</p>
           </div>
         </div>
 
