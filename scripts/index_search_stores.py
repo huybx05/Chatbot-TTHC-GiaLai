@@ -44,7 +44,10 @@ def make_pg_engine():
     return create_engine(url, pool_pre_ping=True)
 
 
-def fetch_chunks(limit: int | None = None) -> list[dict[str, Any]]:
+def fetch_chunks(
+    limit: int | None = None,
+    codes: list[str] | None = None,
+) -> list[dict[str, Any]]:
     sql = """
         SELECT
             s.section_id,
@@ -61,9 +64,12 @@ def fetch_chunks(limit: int | None = None) -> list[dict[str, Any]]:
             s.metadata
         FROM procedure_sections s
         JOIN procedures p ON p.procedure_code = s.procedure_code
-        ORDER BY s.procedure_code, s.chunk_order
     """
     params: dict[str, Any] = {}
+    if codes:
+        sql += " WHERE p.procedure_code = ANY(:codes)"
+        params["codes"] = codes
+    sql += " ORDER BY s.procedure_code, s.chunk_order"
     if limit:
         sql += " LIMIT :limit"
         params["limit"] = limit
@@ -74,7 +80,10 @@ def fetch_chunks(limit: int | None = None) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def fetch_faqs(limit: int | None = None) -> list[dict[str, Any]]:
+def fetch_faqs(
+    limit: int | None = None,
+    codes: list[str] | None = None,
+) -> list[dict[str, Any]]:
     sql = """
         SELECT
             faq_id::text,
@@ -94,9 +103,12 @@ def fetch_faqs(limit: int | None = None) -> list[dict[str, Any]]:
             priority
         FROM faq
         WHERE status = 'ready'
-        ORDER BY priority DESC, procedure_code, created_at
     """
     params: dict[str, Any] = {}
+    if codes:
+        sql += " AND procedure_code = ANY(:codes)"
+        params["codes"] = codes
+    sql += " ORDER BY priority DESC, procedure_code, created_at"
     if limit:
         sql += " LIMIT :limit"
         params["limit"] = limit
@@ -324,23 +336,29 @@ def main() -> None:
         default="all",
     )
     parser.add_argument("--limit", type=int)
+    parser.add_argument(
+        "--codes",
+        nargs="*",
+        default=None,
+        help="Chỉ index các procedure_code này (bổ sung, không recreate)",
+    )
     parser.add_argument("--recreate", action="store_true")
     args = parser.parse_args()
 
     if args.target in {"all", "elasticsearch"}:
-        chunks = fetch_chunks(limit=args.limit)
+        chunks = fetch_chunks(limit=args.limit, codes=args.codes)
         print(f"Loaded chunks from PostgreSQL: {len(chunks)}")
         index_elasticsearch(chunks, recreate=args.recreate)
         print("Elasticsearch indexed")
 
     if args.target in {"all", "qdrant-chunks"}:
-        chunks = fetch_chunks(limit=args.limit)
+        chunks = fetch_chunks(limit=args.limit, codes=args.codes)
         print(f"Loaded chunks from PostgreSQL: {len(chunks)}")
         index_qdrant_chunks(chunks, recreate=args.recreate)
         print("Qdrant chunk collection indexed")
 
     if args.target in {"all", "qdrant-faqs"}:
-        faqs = fetch_faqs(limit=args.limit)
+        faqs = fetch_faqs(limit=args.limit, codes=args.codes)
         print(f"Loaded ready FAQ from PostgreSQL: {len(faqs)}")
         index_qdrant_faqs(faqs, recreate=args.recreate)
         print("Qdrant FAQ collection indexed")

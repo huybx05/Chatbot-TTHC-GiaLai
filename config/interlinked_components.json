@@ -1,0 +1,72 @@
+{
+  "3.000153": {
+    "name": "Thủ tục liên thông đăng ký điều chỉnh đóng bảo hiểm xã hội bắt buộc, bảo hiểm y tế, bảo hiểm thất nghiệp và báo cáo tình hình sử dụng lao động",
+    "components": []
+  },
+  "2.002621": {
+    "name": "Đăng ký khai sinh, đăng ký thường trú, cấp thẻ bảo hiểm y tế cho trẻ em dưới 6 tuổi",
+    "components": [
+      {
+        "code": "1.001193",
+        "name": "Thủ tục đăng ký khai sinh",
+        "source_code": "1.001193"
+      },
+      {
+        "code": "1.014137",
+        "name": "Cấp thẻ bảo hiểm y tế",
+        "source_code": "1.002535"
+      },
+      {
+        "code": "1.116788",
+        "name": "Đăng ký thường trú",
+        "source_code": "1.004222"
+      }
+    ]
+  },
+  "2.002622": {
+    "name": "Đăng ký khai tử, xóa đăng ký thường trú, giải quyết mai táng phí, tử tuất",
+    "components": [
+      {
+        "code": "1.000656",
+        "name": "Thủ tục đăng ký khai tử",
+        "source_code": "1.000656"
+      },
+      {
+        "code": "1.116788",
+        "name": "Xóa đăng ký thường trú",
+        "source_code": "1.003197",
+        "note": "Đã được gộp vào thủ tục Đăng ký thường trú 1.116788"
+      }
+    ]
+  },
+  "1.014475": {
+    "name": "Thủ tục hành chính liên thông điện tử về cấp Giấy phép đủ điều kiện kinh doanh dịch vụ karaoke",
+    "components": [
+      {
+        "code": "1.001029",
+        "name": "Thủ tục cấp giấy phép đủ điều kiện kinh doanh dịch vụ karaoke",
+        "source_code": "1.001029"
+      },
+      {
+        "code": "1.001612",
+        "name": "Đăng ký thành lập hộ kinh doanh",
+        "source_code": "1.001612"
+      },
+      {
+        "code": "3.000243",
+        "name": "Cấp mới Giấy chứng nhận đủ điều kiện về an ninh, trật tự (thực hiện tại cấp xã)",
+        "source_code": "3.000243"
+      }
+    ]
+  },
+  "2.002804": {
+    "name": "Thẩm định báo cáo đánh giá tác động môi trường; cấp giấy phép nhận chìm ở biển ở biển và giao khu vực biển",
+    "components": [
+      {
+        "code": "1.000801",
+        "name": "Cấp giấy phép nhận chìm ở biển (cấp TW)",
+        "source_code": "1.000801"
+      }
+    ]
+  }
+}

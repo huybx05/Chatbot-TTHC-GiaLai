@@ -1377,6 +1377,7 @@ RELATION_LABELS: dict[str, str] = {
     "DOI_TUONG_THUC_HIEN": "Đối tượng thực hiện",
     "KET_QUA_XU_LY": "Kết quả xử lý",
     "THU_TUC_LIEN_QUAN": "Thủ tục liên quan",
+    "THANH_PHAN_CUA": "Thành phần của",
     "CO_QUYET_DINH": "Quyết định ban hành",
 }
 

@@ -1,4 +1,4 @@
-﻿domain_group,source_field,canonical_field,so_tthc,review_status
+domain_group,source_field,canonical_field,so_tthc,review_status
 01. AN_NINH_TRAT_TU_CU_TRU,Quản lý xuất nhập cảnh,XUAT_NHAP_CANH,1,
 01. AN_NINH_TRAT_TU_CU_TRU,"Đăng ký, quản lý cư trú",CU_TRU,1,
 02. CONG_THUONG_NANG_LUONG,An toàn thực phẩm,PHONG_BENH_AN_TOAN_THUC_PHAM,11,
@@ -168,3 +168,5 @@
 15. Y_TE_SUC_KHOE,Thiết bị y tế,DUOC_MY_PHAM_TBYT,6,
 15. Y_TE_SUC_KHOE,Y Dược cổ truyền,DUOC_MY_PHAM_TBYT,11,
 15. Y_TE_SUC_KHOE,Đào tạo và Nghiên cứu khoa học,GIAO_DUC_NGHE_NGHIEP_DAO_TAO,2,
+01. AN_NINH_TRAT_TU_CU_TRU,"Quản lý ngành nghề đầu tư, kinh doanh có điều kiện về an ninh, trật tự",AN_NINH_TRAT_TU,1,
+15. Y_TE_SUC_KHOE,Bảo hiểm y tế,BAO_HIEM_Y_TE,1,

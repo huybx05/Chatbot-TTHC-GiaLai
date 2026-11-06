@@ -37,9 +37,37 @@ NODE_AGENCY = "CoQuan"
 NODE_LEGAL_DOCUMENT = "VanBanPhapLy"
 NODE_DECISION = "QuyetDinh"
 
-#: Bốn TTHC liên thông không có UUID và dùng quan hệ thành phần riêng.
+INTERLINKED_COMPONENTS_PATH = REPO / "config" / "interlinked_components.json"
+
+
+def load_interlinked_components() -> dict[str, list[dict[str, str]]]:
+    """Đọc mapping TTHC liên thông → các mã thủ tục thành phần.
+
+    Mapping nằm ngoài PostgreSQL vì đây là quan hệ nghiệp vụ của cổng DVC,
+    không phải cột nội dung của một thủ tục. Tách file để có thể sửa khi cổng
+    đổi mã mà không phải sửa code Cypher.
+    """
+    if not INTERLINKED_COMPONENTS_PATH.exists():
+        return {}
+    raw = json.loads(INTERLINKED_COMPONENTS_PATH.read_text(encoding="utf-8"))
+    result: dict[str, list[dict[str, str]]] = {}
+    for parent_code, payload in raw.items():
+        components = payload.get("components", []) if isinstance(payload, dict) else []
+        result[str(parent_code)] = [
+            {
+                "code": str(item.get("code") or "").strip(),
+                "name": str(item.get("name") or "").strip(),
+            }
+            for item in components
+            if isinstance(item, dict) and str(item.get("code") or "").strip()
+        ]
+    return result
+
+
+#: Các TTHC có quan hệ thành phần. Giữ lại để tương thích với dữ liệu cũ;
+#: danh sách mã thành phần thực tế lấy từ ``config/interlinked_components.json``.
 INTERLINKED_CODES: frozenset[str] = frozenset(
-    {"3.000153", "2.002621", "2.002622", "1.014475"}
+    {"3.000153", "2.002621", "2.002622", "1.014475", "2.002804"}
 )
 
 #: (tên trường JSON, nhãn đỉnh). Tên cạnh suy ra từ tên trường — viết HOA.
@@ -462,10 +490,12 @@ CYPHER_RELATED = """
 UNWIND $rows AS r
 MERGE (t:{procedure} {{run_id: $run_id, key: r.thu_tuc}})
 MERGE (n:{procedure} {{run_id: $run_id, key: r.key}})
-SET n.ten = r.ten, n.name = r.ten,
-    n.is_inferred = true
+SET n.ten = coalesce(n.ten, r.ten), n.name = coalesce(n.name, r.ten),
+    n.ma = coalesce(r.ma, n.ma),
+    n.is_inferred = coalesce(r.is_inferred, true)
 MERGE (t)-[e:{rel_type}]->(n)
-SET e.is_inferred = true
+SET e.is_inferred = coalesce(r.is_inferred, true),
+    e.component_name = r.ten
 """
 
 
@@ -535,6 +565,7 @@ def main(argv: list[str] | None = None) -> int:
     decision_rows: list[dict] = []
     related_rows: list[dict] = []
     interlinked_rows: list[dict] = []
+    component_map = load_interlinked_components()
 
     for record in records:
         code = str(record.get("ma_thu_tuc") or "").strip()
@@ -581,15 +612,31 @@ def main(argv: list[str] | None = None) -> int:
                     }
                 )
 
-        # Cạnh PHỤ: chỉ tên, không mã → đánh cờ is_inferred. Xem CYPHER_RELATED.
-        # Bốn TTHC liên thông dùng quan hệ THANH_PHAN_CUA, không trộn với
-        # THU_TUC_LIEN_QUAN của các thủ tục thường.
-        for related_name in split_related_procedures(record.get("thu_tuc_lien_quan")):
-            row = {"thu_tuc": code, "key": normalize_key(related_name), "ten": related_name}
-            if code in INTERLINKED_CODES:
-                interlinked_rows.append(row)
-            else:
-                related_rows.append(row)
+        # Cạnh thành phần: dùng mapping mã thật từ cấu hình. Không tạo node
+        # ThuTuc rỗng từ tên, vì như vậy graph có cạnh nhưng không có thủ tục
+        # đích để đi tiếp sang các quan hệ riêng của thủ tục con.
+        if code in INTERLINKED_CODES:
+            for component in component_map.get(code, []):
+                interlinked_rows.append(
+                    {
+                        "thu_tuc": code,
+                        "key": component["code"],
+                        "ma": component["code"],
+                        "ten": component["name"],
+                        "is_inferred": False,
+                    }
+                )
+
+        # Cạnh phụ của thủ tục thường: chỉ có tên, không có mã → is_inferred.
+        if code not in INTERLINKED_CODES:
+            for related_name in split_related_procedures(record.get("thu_tuc_lien_quan")):
+                related_rows.append(
+                    {
+                        "thu_tuc": code,
+                        "key": normalize_key(related_name),
+                        "ten": related_name,
+                    }
+                )
 
         for decision_key, decision_number in split_decision_numbers(
             record.get("so_quyet_dinh")

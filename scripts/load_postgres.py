@@ -289,6 +289,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--write", action="store_true", help="thực sự ghi (mặc định chỉ đọc)")
     ap.add_argument("--truncate", action="store_true", help="xóa 3 bảng nghiệp vụ trước khi nạp")
     ap.add_argument("--skip-sections", action="store_true", help="không nạp chunk")
+    ap.add_argument(
+        "--codes",
+        nargs="*",
+        default=None,
+        help="Chỉ nạp các procedure_code này (dùng cho bổ sung incremental)",
+    )
     ap.add_argument("--limit", type=int, default=None, help="chỉ nạp N bản ghi đầu")
     args = ap.parse_args(argv)
 
@@ -298,6 +304,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     paths = sorted(src.rglob("*.json"))
+    if args.codes:
+        wanted = {str(code).strip() for code in args.codes if str(code).strip()}
+        paths = [path for path in paths if path.stem in wanted]
     if args.limit:
         paths = paths[: args.limit]
     print(f"Đọc {len(paths):,} bản ghi từ {src.relative_to(REPO)}")
