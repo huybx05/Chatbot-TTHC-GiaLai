@@ -1601,15 +1601,6 @@ wheels = [
 ]
 
 [[package]]
-name = "opendataloader-pdf"
-version = "2.5.8"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/66/7f/768ad703a5a33c7b9787777a1a0dc5ca91ae3e2587c6684b157cc44916d1/opendataloader_pdf-2.5.8.tar.gz", hash = "sha256:46845b49840e3df9c954bd035709d6a9a612236beb82df94c611a8a158d587ef", size = 22610938, upload-time = "2026-09-11T01:43:02.304Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d4/94/413e63f8b75dcbbc2204bbe9757f2b7301fad1f3564b7d8340c3e1f1103f/opendataloader_pdf-2.5.8-py3-none-any.whl", hash = "sha256:af91c1c617327138f7bf40fdcd0e2f01b63034543dc231a658adc757a0249e30", size = 22624911, upload-time = "2026-09-11T01:42:58.394Z" },
-]
-
-[[package]]
 name = "openpyxl"
 version = "3.1.5"
 source = { registry = "https://pypi.org/simple" }
@@ -2518,7 +2509,6 @@ dependencies = [
     { name = "langgraph" },
     { name = "neo4j" },
     { name = "openai" },
-    { name = "opendataloader-pdf" },
     { name = "openpyxl" },
     { name = "pandas" },
     { name = "playwright" },
@@ -2549,7 +2539,6 @@ requires-dist = [
     { name = "langgraph", specifier = ">=1.2.11" },
     { name = "neo4j", specifier = ">=6.3.1" },
     { name = "openai", specifier = ">=3.14.1" },
-    { name = "opendataloader-pdf", specifier = ">=2.5.8" },
     { name = "openpyxl", specifier = ">=3.1.5" },
     { name = "pandas", specifier = ">=3.0.6" },
     { name = "playwright", specifier = ">=1.63.0" },
