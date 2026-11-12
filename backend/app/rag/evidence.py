@@ -118,6 +118,12 @@ class EvidenceItem(TypedDict, total=False):
     verification: str
     #: Metadata block/case của chunk (``case_order``, ``case_name``...).
     metadata: dict[str, Any]
+    #: Quan hệ thành phần: tên thành phần tại thời điểm nối (khác tên proc hiện hành).
+    component_name: str
+    #: Mã nguồn của quan hệ, dùng khi mã cũ đã được thay bằng mã mới.
+    source_code: str
+    #: URL của trang DVC ghi nhận quan hệ thành phần.
+    source_url: str
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -186,9 +192,60 @@ def from_fact(fact: ProcedureFact) -> list[EvidenceItem]:
                 verified=True,
                 verification="postgres_fact_by_code",
                 metadata={},
+                component_name="",
+                source_code="",
+                source_url="",
             )
         ],
     )
+
+
+def _graph_identity(
+    row: dict[str, Any],
+    *,
+    subject: str,
+    evidence: Any,
+) -> dict[str, str]:
+    """Chuẩn hóa định danh một dòng Graph, kể cả dòng thành phần.
+
+    Thủ tục thành phần có ``ma_thanh_phan``/``ten_thanh_phan``; thủ tục cha
+    (chiều ngược) có ``ma_thu_tuc``/``ten``. Không dùng tên node cha làm tên
+    của thủ tục con.
+    """
+    code = str(
+        row.get("ma_thanh_phan")
+        or row.get("ma_thu_tuc")
+        or row.get("ma")
+        or getattr(evidence, "procedure_code", "")
+        or ""
+    )
+    name = str(
+        row.get("ten_thanh_phan")
+        or row.get("ten")
+        or subject
+        or ""
+    )
+    return {
+        "procedure_code": code,
+        "procedure_name": name,
+        "detail_url": str(
+            row.get("detail_url") or getattr(evidence, "detail_url", "") or ""
+        ),
+        "component_name": str(row.get("ten_goi") or ""),
+        "source_code": str(row.get("source_code") or ""),
+        "source_url": str(row.get("source_url") or ""),
+    }
+
+
+def _graph_metadata(evidence: Any, subject: str) -> dict[str, str]:
+    if (getattr(evidence, "template", "") or getattr(evidence, "intent", "")) != (
+        "PROCEDURE_RELATIONS"
+    ):
+        return {}
+    return {
+        "subject_code": str(getattr(evidence, "procedure_code", "") or ""),
+        "subject_name": subject,
+    }
 
 
 def from_graph(evidence: GraphEvidence) -> list[EvidenceItem]:
@@ -207,15 +264,12 @@ def from_graph(evidence: GraphEvidence) -> list[EvidenceItem]:
     if evidence.parts:
         for chi_so, part in enumerate(evidence.parts, start=1):
             for row in part.rows:
+                identity = _graph_identity(row, subject=subject, evidence=evidence)
                 ra.append(
                     EvidenceItem(
-                        procedure_code=str(
-                            row.get("ma_thu_tuc") or evidence.procedure_code or ""
-                        ),
-                        procedure_name=str(row.get("ten") or subject),
-                        detail_url=str(
-                            row.get("detail_url") or evidence.detail_url or ""
-                        ),
+                        procedure_code=identity["procedure_code"],
+                        procedure_name=identity["procedure_name"],
+                        detail_url=identity["detail_url"],
                         document_code=str(
                             row.get("document_code") or evidence.document_code or ""
                         ),
@@ -232,19 +286,21 @@ def from_graph(evidence: GraphEvidence) -> list[EvidenceItem]:
                         result_kind=ResultKind.VERIFIED.value,
                         verified=True,
                         verification="graph_template_with_anchor",
-                        metadata={},
+                        metadata=_graph_metadata(evidence, subject),
+                        component_name=identity["component_name"],
+                        source_code=identity["source_code"],
+                        source_url=identity["source_url"],
                     )
                 )
         return _items(EvidenceKind.GRAPH, ra)
 
     for row in evidence.rows:
+        identity = _graph_identity(row, subject=subject, evidence=evidence)
         ra.append(
             EvidenceItem(
-                procedure_code=str(
-                    row.get("ma_thu_tuc") or evidence.procedure_code or ""
-                ),
-                procedure_name=str(row.get("ten") or subject),
-                detail_url=str(row.get("detail_url") or evidence.detail_url or ""),
+                procedure_code=identity["procedure_code"],
+                procedure_name=identity["procedure_name"],
+                detail_url=identity["detail_url"],
                 document_code=str(
                     row.get("document_code") or evidence.document_code or ""
                 ),
@@ -261,7 +317,10 @@ def from_graph(evidence: GraphEvidence) -> list[EvidenceItem]:
                 result_kind=ResultKind.VERIFIED.value,
                 verified=True,
                 verification="graph_template_with_anchor",
-                metadata={},
+                metadata=_graph_metadata(evidence, subject),
+                component_name=identity["component_name"],
+                source_code=identity["source_code"],
+                source_url=identity["source_url"],
             )
         )
     return _items(EvidenceKind.GRAPH, ra)
@@ -301,6 +360,9 @@ def from_chunks(candidates: Sequence[Candidate]) -> list[EvidenceItem]:
                 verified=False,
                 verification="chunk_search_without_anchor",
                 metadata={},
+                component_name="",
+                source_code="",
+                source_url="",
             )
         )
     return _items(EvidenceKind.CHUNK, ra)
@@ -337,6 +399,73 @@ def from_sections(rows: Sequence[dict[str, Any]]) -> list[EvidenceItem]:
                 verified=True,
                 verification="postgres_section_by_code_and_facet",
                 metadata=dict(r.get("metadata") or {}),
+                component_name="",
+                source_code="",
+                source_url="",
             )
         )
     return _items(EvidenceKind.SECTION, ra)
+
+
+#: Nguồn có bằng chứng trực tiếp/đã neo được ưu tiên hơn kết quả tìm kiếm.
+_SOURCE_PRIORITY = {
+    Branch.FACT_LOOKUP.value: 4,
+    Branch.GRAPH.value: 4,
+    Branch.HYBRID.value: 3,
+    "section": 3,
+    "chunk": 2,
+}
+
+
+def _dedup_key(item: EvidenceItem) -> tuple[str, ...]:
+    return (
+        str(item.get("procedure_code") or ""),
+        str(item.get("section_type") or ""),
+        " ".join(str(item.get("content") or "").split()),
+        str(item.get("component_name") or ""),
+        str(item.get("source_url") or ""),
+        str(item.get("part_index") or 0),
+    )
+
+
+def deduplicate_evidence(items: Sequence[EvidenceItem]) -> list[EvidenceItem]:
+    """Hợp nhất bằng chứng trùng, giữ nguồn có độ tin cậy cao hơn.
+
+    Không gộp hai thủ tục khác nhau hoặc hai khía cạnh khác nhau. Các cờ
+    ``by_keyword``/``by_vector`` và rank được hợp nhất để không mất provenance
+    của nhánh còn lại.
+    """
+    chosen: dict[tuple[str, ...], EvidenceItem] = {}
+    order: list[tuple[str, ...]] = []
+
+    for item in items:
+        key = _dedup_key(item)
+        current = chosen.get(key)
+        if current is None:
+            chosen[key] = dict(item)
+            order.append(key)
+            continue
+
+        current_priority = _SOURCE_PRIORITY.get(str(current.get("source") or ""), 0)
+        item_priority = _SOURCE_PRIORITY.get(str(item.get("source") or ""), 0)
+        if item_priority > current_priority:
+            chosen[key] = dict(item)
+            current = chosen[key]
+        current["by_keyword"] = bool(current.get("by_keyword")) or bool(
+            item.get("by_keyword")
+        )
+        current["by_vector"] = bool(current.get("by_vector")) or bool(
+            item.get("by_vector")
+        )
+        if current.get("keyword_rank") is None:
+            current["keyword_rank"] = item.get("keyword_rank")
+        if current.get("vector_rank") is None:
+            current["vector_rank"] = item.get("vector_rank")
+        if not current.get("component_name"):
+            current["component_name"] = item.get("component_name", "")
+        if not current.get("source_code"):
+            current["source_code"] = item.get("source_code", "")
+        if not current.get("source_url"):
+            current["source_url"] = item.get("source_url", "")
+
+    return [chosen[key] for key in order]

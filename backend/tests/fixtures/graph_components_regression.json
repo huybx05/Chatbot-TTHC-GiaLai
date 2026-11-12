@@ -1,0 +1,38 @@
+[
+  {
+    "question": "Thủ tục 2.002621 gồm những thủ tục nào?",
+    "expected_facet": "components",
+    "expected_intent": "COMPONENTS_OF_PROCEDURE",
+    "expected_codes": ["1.001193", "1.014137", "1.116788"],
+    "require_citation": true
+  },
+  {
+    "question": "Thủ tục 2.002804 liên thông với thủ tục nào?",
+    "expected_facet": "components",
+    "expected_intent": "COMPONENTS_OF_PROCEDURE",
+    "expected_codes": ["1.000801"],
+    "require_citation": true
+  },
+  {
+    "question": "1.116788 là thành phần của những thủ tục nào?",
+    "expected_facet": "parent_interlinked",
+    "expected_intent": "PROCEDURES_BY_COMPONENT",
+    "expected_codes": ["2.002621", "2.002622"],
+    "require_citation": true
+  },
+  {
+    "question": "2.002622 có thành phần Xóa đăng ký thường trú không?",
+    "expected_facet": "components",
+    "expected_intent": "COMPONENTS_OF_PROCEDURE",
+    "expected_child_codes": ["1.116788"],
+    "expected_component_name": "Xóa đăng ký thường trú",
+    "require_citation": true
+  },
+  {
+    "question": "Thủ tục 3.000153 gồm những thành phần nào?",
+    "expected_facet": "components",
+    "expected_intent": "COMPONENTS_OF_PROCEDURE",
+    "expected_codes": [],
+    "require_citation": false
+  }
+]

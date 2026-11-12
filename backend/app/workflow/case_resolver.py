@@ -39,13 +39,18 @@ def _cases(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         order = int(meta.get("case_order") or 0)
         if order <= 0 or order in seen:
             continue
+        case_name = str(meta.get("case_name") or "").strip()
+        # Case không có tên riêng thường chỉ là heading chung của cả thủ tục
+        # (ví dụ "Người có yêu cầu đăng ký khai sinh..."). Dùng nó làm case sẽ
+        # biến tên thủ tục thành tín hiệu chọn case và làm mất các case khác.
+        if not case_name:
+            continue
         seen.add(order)
         cases.append(
             {
                 "case_order": order,
-                "case_name": str(meta.get("case_name") or ""),
-                "tokens": _tokens(str(meta.get("case_name") or ""))
-                | _tokens(str(meta.get("block_heading") or "")),
+                "case_name": case_name,
+                "tokens": _tokens(case_name),
             }
         )
     return cases

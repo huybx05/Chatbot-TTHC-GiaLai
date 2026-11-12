@@ -25,8 +25,6 @@ services:
       - -c
       - max_connections=60
     volumes:
-      # PostgreSQL 18 dùng /var/lib/postgresql (PGDATA nằm dưới /18/docker),
-      # không phải /var/lib/postgresql/data như 16.
       - postgres-data:/var/lib/postgresql
     networks: [data]
     mem_limit: 768m
@@ -204,9 +202,7 @@ services:
       timeout: 5s
       retries: 3
     logging: *default-logging
-
-  # Tùy chọn: Cloudflare Tunnel để không mở port 80/443 ra Internet.
-  # Bật bằng: docker compose --profile tunnel up -d
+    
   cloudflared:
     image: cloudflare/cloudflared:latest
     profiles: ["tunnel"]

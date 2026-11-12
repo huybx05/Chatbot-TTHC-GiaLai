@@ -1,0 +1,17 @@
+[
+  {
+    "question": "Địa chỉ của Trung tâm Phục vụ hành chính công tỉnh Gia Lai ở đâu?",
+    "answer": "Trung tâm Phục vụ hành chính công tỉnh Gia Lai hiện có 2 cơ sở hoạt động:\n- Cơ sở 1: Số 127 Hai Bà Trưng, phường Quy Nhơn, tỉnh Gia Lai\n- Cơ sở 2: Số 69 đường Hùng Vương, phường Pleiku, tỉnh Gia Lai",
+    "intent": "general_info"
+  },
+  {
+    "question": "Thời gian làm việc của Trung tâm Phục vụ hành chính công tỉnh Gia Lai là vào mấy giờ?",
+    "answer": "Trung tâm Phục vụ hành chính công tỉnh Gia Lai làm việc theo giờ hành chính từ thứ Hai đến thứ Sáu hàng tuần (trừ các ngày nghỉ lễ, Tết theo quy định):\n• Buổi sáng: Từ 07 giờ 00 phút đến 11 giờ 30 phút\n• Buổi chiều: Từ 13 giờ 30 phút đến 17 giờ 00 phút",
+    "intent": "general_info"
+  },
+  {
+    "question": "Thông tin liên lạc đường dây nóng của Trung tâm Phục vụ hành chính công tỉnh Gia Lai là gì?",
+    "answer": "Trung tâm Phục vụ hành chính công tỉnh Gia Lai hiện có 2 số điện thoại đường dây nóng:\n- 0968 099 137 tại Cơ sở 1: Số 127 Hai Bà Trưng, phường Quy Nhơn, tỉnh Gia Lai\n- 0839 172 679 tại Cơ sở 2: Số 69 đường Hùng Vương, phường Pleiku, tỉnh Gia Lai",
+    "intent": "general_info"
+  }
+]

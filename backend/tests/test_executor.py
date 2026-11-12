@@ -245,6 +245,30 @@ def test_all_empty_abstains_with_insufficient_evidence(monkeypatch) -> None:
     assert patch["refusal"]
 
 
+def test_empty_known_facet_mentions_procedure_and_facet(monkeypatch) -> None:
+    _patch_execution(
+        monkeypatch,
+        executor.Execution(
+            coverage=[
+                executor.RequestCoverage(0, "empty", facet="processing_time")
+            ]
+        ),
+    )
+    monkeypatch.setattr(graph, "_plan_from_state", lambda state: _plan_with_tasks())
+    state = _state()
+    state["grounded_procedure"] = {
+        "code": "1.004873",
+        "name": "Thủ tục cấp Giấy xác nhận tình trạng hôn nhân",
+    }
+
+    patch = asyncio.run(graph.node_thuc_thi(state))
+
+    assert patch["outcome"] == "abstained"
+    assert "1.004873" in patch["refusal"]
+    assert "thời hạn giải quyết" in patch["refusal"]
+    assert "nêu mã hoặc tên" not in patch["refusal"]
+
+
 def test_all_failed_abstains_with_tool_unavailable(monkeypatch) -> None:
     _patch_execution(
         monkeypatch,

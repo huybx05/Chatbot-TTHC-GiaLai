@@ -33,3 +33,10 @@ def test_reverse_capabilities_cover_list_entities() -> None:
         "field",
         "domain_group",
     }
+
+
+def test_component_capabilities_use_thanh_phan_edge() -> None:
+    assert FORWARD_CAPABILITY["components"].intent == "COMPONENTS_OF_PROCEDURE"
+    assert FORWARD_CAPABILITY["components"].expected_types == ("THANH_PHAN_CUA",)
+    assert REVERSE_CAPABILITY["parent_interlinked"].intent == "PROCEDURES_BY_COMPONENT"
+    assert REVERSE_CAPABILITY["parent_interlinked"].expected_types == ("THANH_PHAN_CUA",)

@@ -66,6 +66,7 @@ from dataclasses import dataclass
 from sqlalchemy import text
 
 from backend.app.db.postgres import engine
+from backend.app.rag.procedure_aliases import load_procedure_aliases
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +148,23 @@ async def resolve_codes(question: str) -> CodeLookup:
 
     try:
         matched = await asyncio.to_thread(_query_codes, asked)
+        # Mã thành phần cũ có thể đã được thay bằng mã hiện hành. Chỉ tra alias
+        # cho mã không khớp; không thay đổi mã đã có trong PostgreSQL.
+        aliases = {
+            source.replace(".", ""): target.replace(".", "")
+            for source, target in load_procedure_aliases().items()
+        }
+        alias_codes = list(
+            dict.fromkeys(
+                aliases[code]
+                for code in asked
+                if code not in {item.replace(".", "") for item in matched}
+                and code in aliases
+            )
+        )
+        if alias_codes:
+            matched_alias = await asyncio.to_thread(_query_codes, alias_codes)
+            matched = list(dict.fromkeys([*matched, *matched_alias]))
     except Exception as exc:  # noqa: BLE001 — DB lỗi không được biến thành "không có mã"
         logger.warning("Tra mã thủ tục lỗi: %s", exc)
         return CodeLookup(asked=tuple(asked), error=str(exc)[:200])

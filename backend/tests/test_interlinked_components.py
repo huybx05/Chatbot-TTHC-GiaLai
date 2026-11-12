@@ -32,6 +32,20 @@ def test_khong_tao_node_thanh_phan_tu_ten():
     assert "1.003197" not in all_codes
 
 
+def test_component_giu_source_code_va_source_url() -> None:
+    mapping = load_interlinked_components()
+
+    merged = next(item for item in mapping["2.002622"] if item["code"] == "1.116788")
+    assert merged["source_code"] == "1.003197"
+    assert merged["name"] == "Xóa đăng ký thường trú"
+    assert merged["note"]
+    assert merged["source_url"].startswith("https://dichvucong.gov.vn/")
+
+    replacement = next(item for item in mapping["2.002621"] if item["code"] == "1.014137")
+    assert replacement["source_code"] == "1.002535"
+    assert replacement["source_url"].startswith("https://dichvucong.gov.vn/")
+
+
 def test_thanh_phan_cua_duoc_phep_truy_van():
     from backend.app.rag.graph_query import ALLOWED_RELATIONSHIPS, RELATION_LABELS
 

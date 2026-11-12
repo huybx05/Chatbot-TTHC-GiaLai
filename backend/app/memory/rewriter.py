@@ -398,6 +398,17 @@ def _compact_memory(memory: SessionMemory) -> dict[str, Any]:
             }
             for topic in memory.topics
         ],
+        # FAQ toàn cục không có procedure anchor. Chỉ gửi câu trả lời assistant
+        # không gắn thủ tục để rewriter biết ngữ cảnh "trung tâm", "địa chỉ",
+        # "giờ làm việc"; không gửi nội dung user thô.
+        "recent_turns": [
+            {
+                "role": "assistant",
+                "content": " ".join(str(turn.content or "").split())[:600],
+            }
+            for turn in memory.recent_turns
+            if turn.role == "assistant" and turn.procedure_code is None
+        ][-4:],
         "last_clarify_options": memory.last_clarify_options,
     }
 
@@ -540,8 +551,17 @@ def _validate(
             code=memory.topics[0].procedure_code,
             name=memory.topics[0].procedure_name,
         )
-    else:
+    elif memory.topics:
         return None, "missing_anchor"
+    elif not any(
+        turn.role == "assistant" and turn.procedure_code is None
+        for turn in memory.recent_turns
+    ):
+        return None, "missing_anchor"
+    else:
+        # Follow-up của FAQ toàn cục: không có procedure để gắn anchor,
+        # nhưng recent assistant answer đã có ngữ cảnh trung tâm/địa chỉ/giờ làm việc.
+        anchor = None
 
     retrieval_question = standalone
     if anchor is not None:

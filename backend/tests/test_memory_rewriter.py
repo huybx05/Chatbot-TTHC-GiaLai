@@ -163,6 +163,47 @@ def test_nhieu_topic_chon_dung_anchor() -> None:
     assert "1.014758" in result.retrieval_question
 
 
+def test_followup_faq_toan_cuc_khong_co_anchor() -> None:
+    memory = SessionMemory(
+        summary="",
+        summary_through_message_id=None,
+        recent_turns=[
+            MemoryTurn(
+                id="g1",
+                role="assistant",
+                content=(
+                    "Trung tâm Phục vụ hành chính công tỉnh Gia Lai hiện có "
+                    "2 cơ sở hoạt động."
+                ),
+                procedure_code=None,
+                outcome="answered",
+                options=[],
+                created_at=datetime(2026, 10, 28, tzinfo=UTC),
+            )
+        ],
+        topics=[],
+        active_procedure=None,
+        last_clarify_options=[],
+        last_outcome="answered",
+        total_chars=10,
+    )
+
+    async def complete(_messages: list[dict[str, str]]) -> str:
+        return _json(
+            standalone=(
+                "Số điện thoại đường dây nóng của Trung tâm Phục vụ hành chính "
+                "công tỉnh Gia Lai là gì?"
+            ),
+            anchor=None,
+        )
+
+    result = _rewrite("còn số điện thoại thì sao?", memory, complete)
+
+    assert result.used is True
+    assert result.anchor is None
+    assert "Số điện thoại" in result.retrieval_question
+
+
 def test_nhieu_topic_khong_co_anchor_thi_fallback() -> None:
     async def complete(_messages: list[dict[str, str]]) -> str:
         return _json(

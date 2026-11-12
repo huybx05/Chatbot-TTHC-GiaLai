@@ -235,9 +235,9 @@ export default function ChatPage() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [prefill, setPrefill] = useState("");
   const [suggestions, setSuggestions] =
-    useState<SuggestedQuestion[]>(SUGGESTED_QUESTIONS);
+    useState<SuggestedQuestion[]>(SUGGESTED_QUESTIONS.slice(0, 3));
   const [defaultSuggestions, setDefaultSuggestions] =
-    useState<SuggestedQuestion[]>(SUGGESTED_QUESTIONS);
+    useState<SuggestedQuestion[]>(SUGGESTED_QUESTIONS.slice(0, 3));
   const [isSending, setIsSending] = useState(false);
 
   const applySuggestions = (
@@ -248,6 +248,7 @@ export default function ChatPage() {
       items.map((item) => ({
         id: item.id,
         text: item.question,
+        faqId: item.id,
       })),
     );
   };
@@ -264,19 +265,20 @@ export default function ChatPage() {
     () =>
       suggestions
         .filter((item) => item.text.trim() !== lastUserText)
-        .slice(0, 5),
+        .slice(0, 3),
     [lastUserText, suggestions],
   );
 
   useEffect(() => {
     let cancelled = false;
 
-    getFaqSuggestions(6)
+    getFaqSuggestions(3)
       .then((response) => {
         if (cancelled) return;
         const defaults = response.items.map((item) => ({
           id: item.id,
           text: item.question,
+          faqId: item.id,
         }));
         setDefaultSuggestions(defaults);
         setSuggestions(defaults);
@@ -560,8 +562,18 @@ export default function ChatPage() {
     setRecent(append);
   };
 
-  const handleSend = async (text: string) => {
+  const handleSend = async (text: string, faqId?: string) => {
     if (isSending) return;
+
+    // State cũ/HMR có thể còn suggestion chỉ có id mà chưa có faqId.
+    // Chỉ gửi khi đúng UUID; id tĩnh như "q1" sẽ bị bỏ qua.
+    const selectedFaqId =
+      faqId &&
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        faqId,
+      )
+        ? faqId
+        : undefined;
 
     // Chỉ cuộn một lần khi gửi; các mẩu streaming sau đó không được chiếm quyền cuộn.
     cuonDenLuotMoi.current = true;
@@ -605,9 +617,11 @@ export default function ChatPage() {
       ? {
           question: text,
           session_id: conversationId,
+          ...(selectedFaqId ? { faq_id: selectedFaqId } : {}),
         }
       : {
           question: text,
+          ...(selectedFaqId ? { faq_id: selectedFaqId } : {}),
           history: messages
             .map((message) => ({
               role: message.role,
@@ -702,7 +716,7 @@ export default function ChatPage() {
       replaceMessage(conversationId, {
         ...assistantMessage(cuoi),
         id: dangTraLoi.id,
-        messageId: ket_qua.meta?.message_id,
+        messageId: ket_qua.messageId ?? ket_qua.meta?.message_id,
       });
       if (cuoi.status === "clarify") setPendingOptions([]);
 
@@ -856,11 +870,11 @@ export default function ChatPage() {
         {messages.length === 0 ? (
           <main className="relative flex min-h-[calc(100vh-64px)] flex-col justify-between pt-16">
             <WelcomeView
-              suggestions={suggestions.slice(0, 5)}
+              suggestions={suggestions.slice(0, 3)}
               prefill={prefill}
-              onPickSuggestion={(text) => {
+              onPickSuggestion={(text, faqId) => {
                 setPrefill(text);
-                void handleSend(text);
+                void handleSend(text, faqId);
               }}
               onSend={handleSend}
               isSending={isSending}
@@ -873,9 +887,9 @@ export default function ChatPage() {
                 <MessageList
                   messages={messages}
                   followUpSuggestions={isSending ? [] : followUpSuggestions}
-                  onPickSuggestion={(text) => {
+                  onPickSuggestion={(text, faqId) => {
                     setPrefill(text);
-                    void handleSend(text);
+                    void handleSend(text, faqId);
                   }}
                 />
                 <div ref={cuoiTrang} />
@@ -913,6 +927,9 @@ export default function ChatPage() {
                 />
                 <p className="mt-2 text-center text-[12px] text-text-secondary">
                   Thông tin chỉ mang tính tham khảo và Vui lòng đối chiếu với nguồn chính thức trước khi thực hiện.
+                </p>
+                <p className="mt-2 whitespace-nowrap text-center text-[11px] text-text-secondary">
+                  (Lưu ý: Dữ liệu cập nhật lần cuối vào ngày 01/11/2026 cho giai đoạn phát triển, sẽ cập nhật tính năng tự động cập nhật dữ liệu định kì sau)
                 </p>
               </div>
             </div>

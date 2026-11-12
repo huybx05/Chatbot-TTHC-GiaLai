@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     refresh_rate_limit_per_min: int = 30
     chat_rate_limit_per_min: int = 10
     admin_llm_rate_limit_per_min: int = 5
+    #: Token riêng cho endpoint đánh giá offline. Để trống thì không bắt buộc
+    #: (chỉ nên dùng khi chạy local/tunnel tạm thời).
+    evaluation_api_token: str = ""
 
     # ── 1c. SHORT-TERM MEMORY ───────────────────────────────────────────────
     # Công tắc rollback: tắt là bỏ qua toàn bộ memory, giữ hành vi cũ.
@@ -178,6 +181,12 @@ class Settings(BaseSettings):
     synthesizer_temperature: float = 0.3
     synthesizer_max_tokens: int = 4096
 
+    # ── 4. FAQ LLM OFFLINE ────────────────────────────────────────────────
+    # Chỉ dùng cho script tạo FAQ hàng loạt; không tham gia RAG runtime.
+    faq_llm_base_url: str = ""
+    faq_llm_api_key: str = ""
+    faq_llm_model: str = ""
+
     # ── 5. POSTGRESQL (SSOT) ─────────────────────────────────────────────────
     database_host: str = "localhost"
     database_port: int = 5432
@@ -220,6 +229,9 @@ class Settings(BaseSettings):
     qdrant_host: str = "http://localhost:6333"
     qdrant_collection_semantic: str = ""
     qdrant_collection_faq: str = ""
+    qdrant_collection_faq_global: str = "faq_global"
+    #: Bật auto-match semantic cho FAQ toàn cục. Tắt trong test để không gọi API.
+    faq_global_semantic_enabled: bool = True
     qdrant_api_key: str = ""
 
     # ── 9. NGƯỠNG RAG ────────────────────────────────────────────────────────

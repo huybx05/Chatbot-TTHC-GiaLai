@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,14 @@ _MAX_ANSWER_CHARS = 3000
 _MAX_CONTENT_CHARS = 300
 _MAX_ERROR_CHARS = 1200
 _MAX_LIST_ITEMS = 6
-TRACE_VERSION = 3
+TRACE_VERSION = 4
+
+_TOOL_SOURCES = {
+    "section_lookup": "PostgreSQL - mục nội dung",
+    "fact_lookup": "PostgreSQL - thông tin thủ tục",
+    "graph": "Neo4j - đồ thị tri thức",
+    "hybrid": "Elasticsearch + Qdrant - tìm kiếm kết hợp",
+}
 
 
 def _path() -> Path:
@@ -202,6 +210,8 @@ def _plan(value: object) -> dict[str, Any]:
             "request_index": task.get("request_index"),
             "facet": _short(task.get("facet")),
             "operation": _short(task.get("operation")),
+            "planned_tool": _short(task.get("tool")),
+            "planned_source": _TOOL_SOURCES.get(str(task.get("tool") or ""), ""),
             "subject_ref": task.get("subject_ref"),
             "subject_code": _short(task.get("subject_code")),
             "procedure_codes": [
@@ -215,12 +225,22 @@ def _plan(value: object) -> dict[str, Any]:
     return {"task_count": len(value.get("tasks") or []), "tasks": tasks}
 
 
-def _coverage(value: object) -> list[dict[str, Any]]:
+def _coverage(value: object, evidence: object) -> list[dict[str, Any]]:
+    evidence_by_request = Counter(
+        item.get("request_index")
+        for item in _rows(evidence, limit=10_000)
+        if item.get("request_index") is not None
+    )
     return [
         {
             "request_index": item.get("request_index"),
             "status": _short(item.get("status")),
             "facet": _short(item.get("facet")),
+            "executed_tool": _short(item.get("tool")),
+            "executed_source": _TOOL_SOURCES.get(str(item.get("tool") or ""), ""),
+            "evidence_count": evidence_by_request.get(item.get("request_index"), 0),
+            "fallback_from": _short(item.get("fallback_from")),
+            "fallback_to": _short(item.get("fallback_to")),
             "reason": _short(item.get("reason")),
         }
         for item in _rows(value)
@@ -368,7 +388,7 @@ def _record(question: str, state: dict[str, Any]) -> dict[str, Any]:
         "groundings": _groundings(state.get("groundings")),
         # ── truy xuất ────────────────────────────────────────────────────
         "plan": _plan(state.get("plan")),
-        "coverage": _coverage(state.get("coverage")),
+        "coverage": _coverage(state.get("coverage"), state.get("evidence")),
         "evidence_count": len(state.get("evidence") or []),
         "evidence": _evidence(state.get("evidence")),
         "citation_count": len(state.get("citations") or []),

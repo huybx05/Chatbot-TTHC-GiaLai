@@ -16,10 +16,13 @@ from backend.app.api.chat import router as chat_router
 from backend.app.api.chat_sessions import router as chat_sessions_router
 from backend.app.api.costs import router as costs_router
 from backend.app.api.documents import router as document_router
+from backend.app.api.evaluation import router as evaluation_router
 from backend.app.api.faq import router as faq_router
+from backend.app.api.faq_admin import router as faq_admin_router
 from backend.app.api.feedback import router as feedback_router
 from backend.app.api.guest_sessions import cleanup_expired_guest_sessions
 from backend.app.api.guest_sessions import router as guest_sessions_router
+from backend.app.api.procedures_export import router as procedures_export_router
 from backend.app.api.visits import router as visits_router
 from backend.app.auth.router import router as auth_router
 from backend.app.auth.security import cleanup_expired_sessions
@@ -155,12 +158,15 @@ app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(auth_router, prefix=settings.api_v1_prefix)
 app.include_router(chat_sessions_router, prefix=settings.api_v1_prefix)
+app.include_router(procedures_export_router, prefix="/api/admin")
 app.include_router(admin_router, prefix="/api/admin")
+app.include_router(faq_admin_router, prefix="/api/admin")
 app.include_router(costs_router, prefix="/api/admin")
 app.include_router(chat_router)
 app.include_router(feedback_router)
 app.include_router(guest_sessions_router)
 app.include_router(document_router, prefix=settings.api_v1_prefix)
+app.include_router(evaluation_router, prefix=settings.api_v1_prefix)
 app.include_router(faq_router, prefix=settings.api_v1_prefix)
 app.include_router(visits_router, prefix=settings.api_v1_prefix)
 

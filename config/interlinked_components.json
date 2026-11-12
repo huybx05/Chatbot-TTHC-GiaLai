@@ -1,7 +1,8 @@
 {
   "3.000153": {
     "name": "Thủ tục liên thông đăng ký điều chỉnh đóng bảo hiểm xã hội bắt buộc, bảo hiểm y tế, bảo hiểm thất nghiệp và báo cáo tình hình sử dụng lao động",
-    "components": []
+    "components": [],
+    "source_url": "https://dichvucong.gov.vn/thu-tuc-hanh-chinh-lien-thong/234778"
   },
   "2.002621": {
     "name": "Đăng ký khai sinh, đăng ký thường trú, cấp thẻ bảo hiểm y tế cho trẻ em dưới 6 tuổi",
@@ -21,7 +22,8 @@
         "name": "Đăng ký thường trú",
         "source_code": "1.004222"
       }
-    ]
+    ],
+    "source_url": "https://dichvucong.gov.vn/thu-tuc-hanh-chinh-lien-thong/341088"
   },
   "2.002622": {
     "name": "Đăng ký khai tử, xóa đăng ký thường trú, giải quyết mai táng phí, tử tuất",
@@ -37,7 +39,8 @@
         "source_code": "1.003197",
         "note": "Đã được gộp vào thủ tục Đăng ký thường trú 1.116788"
       }
-    ]
+    ],
+    "source_url": "https://dichvucong.gov.vn/thu-tuc-hanh-chinh-lien-thong/341089"
   },
   "1.014475": {
     "name": "Thủ tục hành chính liên thông điện tử về cấp Giấy phép đủ điều kiện kinh doanh dịch vụ karaoke",
@@ -57,7 +60,8 @@
         "name": "Cấp mới Giấy chứng nhận đủ điều kiện về an ninh, trật tự (thực hiện tại cấp xã)",
         "source_code": "3.000243"
       }
-    ]
+    ],
+    "source_url": "https://dichvucong.gov.vn/thu-tuc-hanh-chinh-lien-thong/420163"
   },
   "2.002804": {
     "name": "Thẩm định báo cáo đánh giá tác động môi trường; cấp giấy phép nhận chìm ở biển ở biển và giao khu vực biển",
@@ -67,6 +71,7 @@
         "name": "Cấp giấy phép nhận chìm ở biển (cấp TW)",
         "source_code": "1.000801"
       }
-    ]
+    ],
+    "source_url": "https://dichvucong.gov.vn/thu-tuc-hanh-chinh-lien-thong/409857"
   }
 }

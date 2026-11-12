@@ -4,7 +4,7 @@ import MessageInput from "./MessageInput";
 interface WelcomeViewProps {
   suggestions: SuggestedQuestion[];
   prefill: string;
-  onPickSuggestion: (text: string) => void;
+  onPickSuggestion: (text: string, faqId?: string) => void;
   onSend: (text: string) => void;
   isSending?: boolean;
 }
@@ -27,6 +27,7 @@ export default function WelcomeView({
         />
         <h1 className="mb-3 text-center text-[26px] font-bold leading-tight text-text-primary md:text-[28px]">
           Xin chào! Tôi có thể hỗ trợ gì cho bạn.
+          {/* Xin chào! Bạn muốn tôi hỗ trợ tra cứu thủ tục nào lúc này. */}
         </h1>
         {/* <p className="mb-8 max-w-[620px] text-center text-[16px] leading-relaxed text-text-secondary">
           Hệ thống hỗ trợ tra cứu thủ tục hành chính.
@@ -44,7 +45,9 @@ export default function WelcomeView({
               <button
                 key={question.id}
                 type="button"
-                onClick={() => onPickSuggestion(question.text)}
+                onClick={() =>
+                  onPickSuggestion(question.text, question.faqId ?? question.id)
+                }
                 className="group flex w-full items-center justify-between rounded-xl border border-border-color bg-card-surface px-4 py-3.5 text-left text-text-primary shadow-[0_1px_3px_rgba(0,0,0,0.03)] transition-all hover:border-border-strong hover:bg-secondary-surface"
               >
                 <span className="text-[15px] text-text-primary md:text-[16px]">{question.text}</span>
@@ -64,9 +67,10 @@ export default function WelcomeView({
             disabled={isSending}
           />
           <p className="mt-3 text-center text-[13px] leading-normal text-text-secondary">
-            {/* Trợ lý AI chỉ cung cấp thông tin tham khảo. Vui lòng đối chiếu với nguồn chính thức và quy
-            định hiện hành. */}
             Thông tin chỉ mang tính tham khảo và Vui lòng đối chiếu với nguồn chính thức trước khi thực hiện.
+          </p>
+          <p className="mt-2 whitespace-nowrap text-center text-[13px] leading-normal text-text-secondary">
+            (Lưu ý: Dữ liệu cập nhật lần cuối vào ngày 01/11/2026 cho giai đoạn phát triển, sẽ cập nhật tính năng tự động cập nhật dữ liệu định kì sau)
           </p>
         </div>
       </div>

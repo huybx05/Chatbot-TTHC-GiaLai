@@ -32,6 +32,28 @@ def test_memory_from_history_giu_dung_thu_tu_va_vai() -> None:
     assert memory.is_empty() is False
 
 
+def test_memory_from_history_nhan_ma_thu_tuc_client_gui() -> None:
+    memory = memory_from_history(
+        [
+            {
+                "role": "user",
+                "content": "Hồ sơ gồm gì?",
+                "procedure_code": "1.000168",
+            },
+            {
+                "role": "assistant",
+                "content": "Hồ sơ gồm đơn.",
+                "procedure_code": "1.000168",
+            },
+        ]
+    )
+
+    assert memory.topics
+    assert memory.topics[0].procedure_code == "1.000168"
+    assert memory.active_procedure is not None
+    assert memory.active_procedure.code == "1.000168"
+
+
 def test_load_session_memory_khong_tom_tat_truoc_khi_tra_cuu(
     monkeypatch,
 ) -> None:

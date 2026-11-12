@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 #: hỏi — nó chỉ nối từ vựng của mô hình với từ vựng của dữ liệu. Dữ liệu có tên mới thì thêm
 #: một dòng, không phải sửa luật nào.
 KHIA_CANH_SANG_SECTION: dict[str, tuple[str, ...]] = {
+    "notes": ("REQUIRED_DOCUMENTS",),
     "required_documents": ("REQUIRED_DOCUMENTS",),
     "steps": ("STEPS",),
     "submission_method": ("SUBMISSION_METHOD",),

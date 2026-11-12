@@ -17,7 +17,7 @@ export default function MessageList({
 }: {
   messages: ChatMessage[];
   followUpSuggestions?: SuggestedQuestion[];
-  onPickSuggestion?: (text: string) => void;
+  onPickSuggestion?: (text: string, faqId?: string) => void;
 }) {
   const lastAssistantIndex = messages.reduce(
     (last, message, index) =>

@@ -72,6 +72,14 @@ class Facet(StrEnum):
     STATUS = "status"
     TARGET_AUDIENCE = "target_audience"
     RELATED_PROCEDURES = "related_procedures"
+    #: Các thủ tục con của một thủ tục liên thông (quan hệ THANH_PHAN_CUA).
+    COMPONENTS = "components"
+    #: Thủ tục cha của một thủ tục thành phần (chiều ngược THANH_PHAN_CUA).
+    PARENT_INTERLINKED = "parent_interlinked"
+    #: Phần "Lưu ý" trong thành phần hồ sơ (case riêng của REQUIRED_DOCUMENTS).
+    NOTES = "notes"
+    #: Quan hệ thủ tục nói chung: "liên quan", "liên thông", cha/con.
+    PROCEDURE_RELATIONS = "procedure_relations"
     UNKNOWN = "unknown"
 
 

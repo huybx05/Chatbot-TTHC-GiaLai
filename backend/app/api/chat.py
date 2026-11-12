@@ -30,7 +30,12 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from backend.app.api.chat_sessions import persist_chat_message
-from backend.app.api.faq import FaqSuggestion, find_ready_faq, suggest_ready_faqs
+from backend.app.api.faq import (
+    FAQ_INTENTS,
+    FaqSuggestion,
+    find_ready_faq_by_id,
+    suggest_ready_faqs,
+)
 from backend.app.api.guest_sessions import resolve_guest_session, touch_guest_session
 from backend.app.auth.dependencies import OptionalUser
 from backend.app.config import settings
@@ -43,6 +48,7 @@ from backend.app.memory.service import (
     summarize_session_memory,
 )
 from backend.app.memory.types import SessionMemory
+from backend.app.rag.faq_global import find_global_faq
 from backend.app.rate_limit import limiter
 from backend.app.security_utils import client_ip
 from backend.app.workflow import trace_log
@@ -67,8 +73,11 @@ class HistoryTurn(BaseModel):
     role: Literal["user", "assistant"]
     content: Annotated[
         str,
-        StringConstraints(strip_whitespace=True, min_length=1, max_length=1_200),
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=8_000),
     ]
+    #: Mã thủ tục của lượt này, nếu client biết. Giúp memory giữ anchor khi
+    #: lịch sử không chứa mã trong nội dung câu trả lời.
+    procedure_code: str | None = None
 
 
 class ChatRequest(BaseModel):
@@ -79,6 +88,8 @@ class ChatRequest(BaseModel):
     ]
     session_id: UUID | None = None
     history: list[HistoryTurn] = Field(default_factory=list, max_length=8)
+    #: Chỉ có khi người dùng bấm một FAQ gợi ý. Không dùng để tự khớp câu hỏi.
+    faq_id: UUID | None = None
 
 
 async def _load_request_memory(
@@ -274,7 +285,15 @@ def _suggestions_for_faq(
 ) -> list[FaqSuggestion]:
     code = str(faq.get("procedure_code") or "")
     if not code:
-        return []
+        return [
+            FaqSuggestion(**item)
+            for item in suggest_ready_faqs(
+                None,
+                exclude_question=exclude_question,
+                exclude_questions=previous_questions or (),
+                limit=3,
+            )
+        ]
     return [
         FaqSuggestion(**item)
         for item in suggest_ready_faqs(
@@ -285,6 +304,51 @@ def _suggestions_for_faq(
             limit=3,
         )
     ]
+
+
+def _faq_chat_response(
+    faq: dict[str, Any],
+    *,
+    exclude_question: str,
+    previous_questions: list[str] | None = None,
+) -> ChatResponse:
+    code = str(faq.get("procedure_code") or "")
+    name = str(faq.get("procedure_name") or code)
+    detail_url = str(faq.get("detail_url") or "")
+    citations = (
+        [
+            CitationResponse(
+                title=name or code,
+                url=detail_url,
+                section=FAQ_INTENTS.get(str(faq.get("intent") or ""), ""),
+            )
+        ]
+        if code and detail_url
+        else []
+    )
+    documents = (
+        _file_mau(code)
+        if code and str(faq.get("intent") or "") == "required_documents"
+        else []
+    )
+    return ChatResponse(
+        answer=str(faq["answer"]),
+        citations=citations,
+        documents=documents,
+        procedure=(
+            ProcedureSummary(procedure_code=code, procedure_name=name)
+            if code
+            else None
+        ),
+        status="answered",
+        abstained=False,
+        suggestions=_suggestions_for_faq(
+            faq,
+            exclude_question=exclude_question,
+            previous_questions=previous_questions,
+        ),
+        faq_id=str(faq.get("faq_id") or faq.get("id") or "") or None,
+    )
 
 
 def _with_suggestions(
@@ -470,6 +534,10 @@ class ChatResponse(BaseModel):
     options: list[ClarifyOptionResponse] = []
     #: Phase 1: tối đa 3 FAQ cùng thủ tục, khác facet vừa hỏi.
     suggestions: list[FaqSuggestion] = []
+    #: Các facet thực sự đã trả lời, dùng cho đánh giá offline.
+    coverage: list[str] = Field(default_factory=list)
+    #: FAQ đã khớp khi người dùng bấm/gửi FAQ toàn cục.
+    faq_id: str | None = None
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -496,12 +564,12 @@ def _ip(yeu_cau: Request) -> str:
     return client_ip(yeu_cau) or "unknown"
 
 
-def _kiem_tan_suat(ip: str) -> None:
+def _kiem_tan_suat(ip: str, *, skip: bool = False) -> None:
     """Ném 429 nếu IP đã hỏi quá nhiều trong một phút.
 
     Dùng limiter chung: Redis khi có ``REDIS_URL``, fallback in-memory khi local.
     """
-    if RATE_LIMIT <= 0:
+    if skip or RATE_LIMIT <= 0:
         return
     result = limiter.check(f"chat:{ip}", limit=RATE_LIMIT)
     if not result.allowed:
@@ -709,6 +777,18 @@ CLARIFY_REPHRASE_ANSWER = (
 )
 
 
+def _coverage_facets(result: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for item in result.get("coverage") or []:
+        if isinstance(item, dict):
+            value = str(item.get("facet") or item.get("section") or "").strip()
+        else:
+            value = str(item or "").strip()
+        if value and value not in values:
+            values.append(value)
+    return values
+
+
 def _dung_phan_hoi(result: dict[str, Any]) -> ChatResponse:
     """Đổi kết quả luồng thành phản hồi công khai. Không gọi mô hình, không chạm mạng."""
     outcome = str(result.get("outcome") or "")
@@ -763,6 +843,7 @@ def _dung_phan_hoi(result: dict[str, Any]) -> ChatResponse:
         status=status,
         abstained=status != "answered",
         options=options if status == "clarify" else [],
+        coverage=_coverage_facets(result),
     )
 
 
@@ -777,35 +858,27 @@ async def chat(
     from backend.app.rag import retrieval
 
     started_at = time.perf_counter()
-    _kiem_tan_suat(_ip(request))
+    _kiem_tan_suat(
+        _ip(request),
+        skip=bool(getattr(request.state, "evaluation_mode", False)),
+    )
     memory = await _load_request_memory(payload, user, request)
     guest_id = getattr(request.state, "guest_session_id", None)
     memory_bound = payload.session_id is not None or bool(payload.history)
+    evaluation_mode = bool(getattr(request.state, "evaluation_mode", False))
+    faq = find_ready_faq_by_id(payload.faq_id) if payload.faq_id is not None else None
+    if payload.faq_id is not None and faq is None:
+        raise HTTPException(status_code=404, detail="FAQ không còn khả dụng.")
+    faq_source = "faq"
     await _persist_message(
         payload, user, role="user", content=payload.question, guest_session_id=guest_id
     )
 
-    faq = find_ready_faq(payload.question)
     if faq is not None:
-        code = str(faq.get("procedure_code") or "")
-        phan_hoi = ChatResponse(
-            answer=str(faq["answer"]),
-            citations=[],
-            procedure=(
-                ProcedureSummary(
-                    procedure_code=code,
-                    procedure_name=str(faq.get("procedure_name") or code),
-                )
-                if code
-                else None
-            ),
-            status="answered",
-            abstained=False,
-            suggestions=_suggestions_for_faq(
-                faq,
-                exclude_question=payload.question,
-                previous_questions=_previous_questions(memory, payload),
-            ),
+        phan_hoi = _faq_chat_response(
+            faq,
+            exclude_question=payload.question,
+            previous_questions=_previous_questions(memory, payload),
         )
         saved_assistant = await _persist_message(
             payload,
@@ -814,7 +887,7 @@ async def chat(
             content=phan_hoi.answer,
             metadata=_assistant_metadata(
                 phan_hoi,
-                source="faq",
+                source=faq_source,
                 total_ms=_elapsed_ms(started_at),
                 streamed=False,
             ),
@@ -825,13 +898,40 @@ async def chat(
         return phan_hoi
 
     khoa = _khoa_cache(payload.question)
-    da_co = _lay_cache(khoa) if not memory_bound else None
+    da_co = _lay_cache(khoa) if not memory_bound and not evaluation_mode else None
     if da_co is not None:
         return ChatResponse(**da_co)
 
     rewrite = await rewrite_question_with_memory(payload.question, memory)
     retrieval_question = rewrite.retrieval_question
     request.state.rewrite = rewrite
+
+    # Hướng A: match FAQ toàn cục sau memory rewrite, trước RAG.
+    if payload.faq_id is None:
+        global_faq = await find_global_faq(retrieval_question)
+        if global_faq is not None:
+            phan_hoi = _faq_chat_response(
+                global_faq,
+                exclude_question=payload.question,
+                previous_questions=_previous_questions(memory, payload),
+            )
+            saved_assistant = await _persist_message(
+                payload,
+                user,
+                role="assistant",
+                content=phan_hoi.answer,
+                metadata=_assistant_metadata(
+                    phan_hoi,
+                    source="faq_global",
+                    total_ms=_elapsed_ms(started_at),
+                    streamed=False,
+                ),
+                guest_session_id=guest_id,
+            )
+            if saved_assistant:
+                _queue_memory_summary(background_tasks, payload, user)
+            return phan_hoi
+
     memory_anchor = (
         rewrite.anchor.to_dict()
         if rewrite.used and rewrite.anchor is not None
@@ -873,7 +973,7 @@ async def chat(
     )
     if saved_assistant:
         _queue_memory_summary(background_tasks, payload, user)
-    if not memory_bound:
+    if not memory_bound and not evaluation_mode and phan_hoi.status == "answered":
         _cat_cache(khoa, phan_hoi.model_dump())
     return phan_hoi
 
@@ -953,7 +1053,15 @@ async def _phat_stream(
     )
 
     if not se_stream:
-        yield _su_kien("done", {"answer": phan_hoi.answer, "streamed": False})
+        message_id = await save_assistant(phan_hoi) if save_assistant is not None else None
+        yield _su_kien(
+            "done",
+            {
+                "answer": phan_hoi.answer,
+                "streamed": False,
+                "message_id": message_id,
+            },
+        )
         return
 
     gom: list[str] = []
@@ -1050,37 +1158,29 @@ async def chat_stream(
     from backend.app.rag import retrieval
 
     started_at = time.perf_counter()
-    _kiem_tan_suat(_ip(request))
+    _kiem_tan_suat(
+        _ip(request),
+        skip=bool(getattr(request.state, "evaluation_mode", False)),
+    )
     memory = await _load_request_memory(payload, user, request)
     guest_id = getattr(request.state, "guest_session_id", None)
     memory_bound = payload.session_id is not None or bool(payload.history)
+    evaluation_mode = bool(getattr(request.state, "evaluation_mode", False))
+    faq = find_ready_faq_by_id(payload.faq_id) if payload.faq_id is not None else None
+    if payload.faq_id is not None and faq is None:
+        raise HTTPException(status_code=404, detail="FAQ không còn khả dụng.")
+    faq_source = "faq"
     await _persist_message(
         payload, user, role="user", content=payload.question, guest_session_id=guest_id
     )
 
-    faq = find_ready_faq(payload.question)
     if faq is not None:
-        answer = str(faq["answer"])
-        code = str(faq.get("procedure_code") or "")
-        phan_hoi = ChatResponse(
-            answer=answer,
-            citations=[],
-            procedure=(
-                ProcedureSummary(
-                    procedure_code=code,
-                    procedure_name=str(faq.get("procedure_name") or code),
-                )
-                if code
-                else None
-            ),
-            status="answered",
-            abstained=False,
-            suggestions=_suggestions_for_faq(
-                faq,
-                exclude_question=payload.question,
-                previous_questions=_previous_questions(memory, payload),
-            ),
+        phan_hoi = _faq_chat_response(
+            faq,
+            exclude_question=payload.question,
+            previous_questions=_previous_questions(memory, payload),
         )
+        answer = phan_hoi.answer
         # FAQ là câu trả lời đã có sẵn: lưu trước khi phát meta để có message_id
         # cho like/dislike, giống câu trả lời do mô hình sinh.
         saved_message_id = await _persist_message(
@@ -1090,7 +1190,7 @@ async def chat_stream(
             content=answer,
             metadata=_assistant_metadata(
                 phan_hoi,
-                source="faq",
+                source=faq_source,
                 total_ms=_elapsed_ms(started_at),
                 streamed=False,
             ),
@@ -1105,13 +1205,15 @@ async def chat_stream(
                 "meta",
                 {
                     "status": "answered",
-                    "procedure": None,
-                    "citations": [],
+                    "procedure": (
+                        phan_hoi.procedure.model_dump() if phan_hoi.procedure else None
+                    ),
+                    "citations": [c.model_dump() for c in phan_hoi.citations],
                     "options": [],
-                    "documents": [],
+                    "documents": [d.model_dump() for d in phan_hoi.documents],
                     "cached": False,
                     "message_id": saved_message_id,
-                    "source": "faq",
+                    "source": faq_source,
                     "suggestions": [
                         item.model_dump() for item in phan_hoi.suggestions
                     ],
@@ -1132,9 +1234,23 @@ async def chat_stream(
         )
 
     khoa = _khoa_cache(payload.question)
-    da_co = _lay_cache(khoa) if not memory_bound else None
+    da_co = _lay_cache(khoa) if not memory_bound and not evaluation_mode else None
     if da_co is not None:
         async def _phat_lai() -> AsyncIterator[str]:
+            cached_response = ChatResponse(**da_co)
+            cached_message_id = await _persist_message(
+                payload,
+                user,
+                role="assistant",
+                content=cached_response.answer,
+                metadata=_assistant_metadata(
+                    cached_response,
+                    source="cache",
+                    total_ms=_elapsed_ms(started_at),
+                    streamed=False,
+                ),
+                guest_session_id=guest_id,
+            )
             # Cùng hình dạng sự kiện với đường chạy thật, để client không phải xử lý hai kiểu.
             yield _su_kien("start", {"question": payload.question})
             yield _su_kien(
@@ -1147,13 +1263,21 @@ async def chat_stream(
                     "documents": da_co.get("documents") or [],
                     "suggestions": da_co.get("suggestions") or [],
                     "cached": True,
+                    "message_id": cached_message_id,
                 },
             )
             # Phát lại thành từng mẩu: câu cache phải **trông** giống câu mới. Không có mô
             # hình nào chạy ở đây — chỉ cắt chuỗi đã lưu, nên chi phí bằng 0.
             for manh in _cat_mau(str(da_co.get("answer") or "")):
                 yield _su_kien("delta", {"text": manh})
-            yield _su_kien("done", {"answer": da_co["answer"], "streamed": True})
+            yield _su_kien(
+                "done",
+                {
+                    "answer": da_co["answer"],
+                    "streamed": True,
+                    "message_id": cached_message_id,
+                },
+            )
 
         return StreamingResponse(
             _phat_lai(),
@@ -1171,6 +1295,64 @@ async def chat_stream(
         rewrite = await rewrite_question_with_memory(payload.question, memory)
         retrieval_question = rewrite.retrieval_question
         request.state.rewrite = rewrite
+
+        # Hướng A: match FAQ toàn cục sau memory rewrite, trước RAG.
+        if payload.faq_id is None:
+            global_faq = await find_global_faq(retrieval_question)
+            if global_faq is not None:
+                phan_hoi = _faq_chat_response(
+                    global_faq,
+                    exclude_question=payload.question,
+                    previous_questions=_previous_questions(memory, payload),
+                )
+                answer = phan_hoi.answer
+                saved_message_id = await _persist_message(
+                    payload,
+                    user,
+                    role="assistant",
+                    content=answer,
+                    metadata=_assistant_metadata(
+                        phan_hoi,
+                        source="faq_global",
+                        total_ms=_elapsed_ms(started_at),
+                        streamed=False,
+                    ),
+                    guest_session_id=guest_id,
+                )
+                if saved_message_id:
+                    _queue_memory_summary(background_tasks, payload, user)
+                yield _su_kien(
+                    "meta",
+                    {
+                        "status": "answered",
+                        "procedure": (
+                            phan_hoi.procedure.model_dump()
+                            if phan_hoi.procedure
+                            else None
+                        ),
+                        "citations": [c.model_dump() for c in phan_hoi.citations],
+                        "options": [],
+                        "documents": [d.model_dump() for d in phan_hoi.documents],
+                        "cached": False,
+                        "message_id": saved_message_id,
+                        "source": "faq_global",
+                        "suggestions": [
+                            item.model_dump() for item in phan_hoi.suggestions
+                        ],
+                    },
+                )
+                for manh in _cat_mau(answer):
+                    yield _su_kien("delta", {"text": manh})
+                yield _su_kien(
+                    "done",
+                    {
+                        "answer": answer,
+                        "streamed": True,
+                        "message_id": saved_message_id,
+                    },
+                )
+                return
+
         memory_anchor = (
             rewrite.anchor.to_dict()
             if rewrite.used and rewrite.anchor is not None
@@ -1242,7 +1424,7 @@ async def chat_stream(
             if saved_message_id:
                 _queue_memory_summary(background_tasks, payload, user)
         # Cache sau khi stream xong: câu lặp lại trả về ngay, không tốn lần sinh nữa.
-        if not memory_bound:
+        if not memory_bound and not evaluation_mode:
             _cat_cache(khoa, _dung_phan_hoi(ket_qua).model_dump())
         # Ghi trace **sau khi stream xong** để có câu trả lời và kết quả kiểm chứng thật.
         trace_log.append_from_state(

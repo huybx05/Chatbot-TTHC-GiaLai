@@ -77,11 +77,11 @@ def test_compare_is_direct_when_two_procedures_are_grounded() -> None:
     assert plan_class is PlanClass.DIRECT
 
 
-def test_related_procedures_is_unsupported() -> None:
+def test_related_procedures_is_direct() -> None:
     plan_class, _ = classify_request(
         _request(facet="related_procedures"), [_Grounding(0, "resolved")]
     )
-    assert plan_class is PlanClass.UNSUPPORTED
+    assert plan_class is PlanClass.DIRECT
 
 
 def test_legal_condition_without_subject_is_unsupported() -> None:

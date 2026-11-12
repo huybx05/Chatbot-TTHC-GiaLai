@@ -200,9 +200,10 @@ async def _ground_procedure(
     # ① a verified code named in the mention — the strongest possible evidence
     for code in mentioned_codes:
         if code in verified:
+            name = (await resolver.procedure_names()).get(code, "")
             return SubjectGrounding(
                 index=index, status="resolved", type="procedure", mention=text,
-                code=code, method="code", score=1.0,
+                code=code, name=name, method="code", score=1.0,
             )
 
     # Người dùng hay gõ mã không dấu chấm: "1 013225", "1013225".

@@ -73,7 +73,15 @@ from backend.app.memory.resolver import (
 from backend.app.rag import embeddings, graph_query, grounding, resolve, scope
 from backend.app.rag.evidence import Branch
 from backend.app.rag.resolver import ProcedureResolution
-from backend.app.workflow import answer, executor, nodes, plan_class, planner, question_parser
+from backend.app.workflow import (
+    answer,
+    executor,
+    nodes,
+    plan_class,
+    planner,
+    question_parser,
+    refusals,
+)
 from backend.app.workflow.identity import (
     answered_procedure,
     candidates_from_groundings,
@@ -119,6 +127,28 @@ KET_CUC = {
     BranchSignal.CLARIFY: Outcome.CLARIFY,
     BranchSignal.ERROR: Outcome.ERROR,
 }
+
+
+def _thieu_tien_ngu(
+    question: str,
+    resolution: resolve.Resolution,
+    *,
+    co_active: bool,
+    frame_missing_subject: bool,
+) -> bool:
+    """Đại từ chỉ định có thiếu tiền ngữ thật không.
+
+    Câu vừa nêu tên thủ tục rồi nói "thủ tục này" vẫn có tiền ngữ. Trước đây
+    chỉ kiểm ``resolution.codes`` nên trường hợp resolve theo tên (``resolution.ma``)
+    bị biến thành clarify rỗng.
+    """
+    if frame_missing_subject:
+        return True
+    if graph_query.demonstrative_position(question) < 0:
+        return False
+    if co_active:
+        return False
+    return not resolution.codes and not resolution.ma
 
 
 def _noi_dung_hoi_lai(state: AgentState) -> dict[str, Any]:
@@ -323,10 +353,11 @@ async def node_router(state: AgentState) -> dict[str, Any]:
         and not frame.get("subject_mentions")
     )
     memory_view = dict(state.get("memory") or {})
-    missing_pronoun = bool(
-        graph_query.demonstrative_position(cau) >= 0
-        and not memory_view.get("active_procedure")
-        and not ket_qua.codes
+    missing_pronoun = _thieu_tien_ngu(
+        cau,
+        ket_qua,
+        co_active=bool(memory_view.get("active_procedure")),
+        frame_missing_subject=frame_missing_subject,
     )
     if (
         ket_qua.needs_antecedent or frame_missing_subject or missing_pronoun
@@ -783,23 +814,14 @@ LOI_KE_HOACH = {
         "Để so sánh, tôi cần xác định được hai thủ tục cụ thể. "
         "Bạn vui lòng nêu mã hoặc tên của cả hai thủ tục."
     ),
-    "UNSUPPORTED_FACET": (
-        "Hệ thống chưa có dữ liệu cho loại thông tin này. "
-        "Hiện tra cứu được: hồ sơ, trình tự, cách nộp, thời hạn, phí, kết quả, "
-        "cơ quan, lĩnh vực, cấp, đối tượng và căn cứ pháp lý."
-    ),
+    "UNSUPPORTED_FACET": refusals.unsupported_facet(),
     "UNSUPPORTED_COUNT": "Hệ thống chưa hỗ trợ đếm cho loại thông tin này.",
     "UNSUPPORTED_CONSTRAINT": (
         "Hệ thống chưa hỗ trợ lọc theo điều kiện bạn nêu. "
         "Bạn có thể bỏ điều kiện đó hoặc hỏi theo mã/tên thủ tục."
     ),
-    "INSUFFICIENT_EVIDENCE": (
-        "Dữ liệu hiện có chưa đủ để trả lời câu hỏi này. "
-        "Bạn thử nêu mã hoặc tên thủ tục để tôi tra chính xác hơn."
-    ),
-    "TOOL_UNAVAILABLE": (
-        "Nguồn dữ liệu đang tạm lỗi nên tôi chưa tra được. Bạn thử lại sau ít phút."
-    ),
+    "INSUFFICIENT_EVIDENCE": refusals.insufficient_evidence(),
+    "TOOL_UNAVAILABLE": refusals.source_failed(),
 }
 
 
@@ -898,14 +920,31 @@ async def node_thuc_thi(state: AgentState) -> dict[str, Any]:
 
     if execution.failed_all:
         reason = "TOOL_UNAVAILABLE"
+        refusal = LOI_KE_HOACH[reason]
     elif unsupported_reasons:
         reason = sorted(unsupported_reasons)[0]
+        refusal = LOI_KE_HOACH.get(reason, LOI_KE_HOACH["INSUFFICIENT_EVIDENCE"])
     else:
-        reason = "INSUFFICIENT_EVIDENCE"
+        empty_facets = [
+            str(item.facet)
+            for item in execution.coverage
+            if item.status == executor.STATUS_EMPTY and item.facet
+        ]
+        if empty_facets:
+            identity = state.get("grounded_procedure") or state.get("resolution") or {}
+            reason = "FACET_NOT_RECORDED"
+            refusal = refusals.facet_not_recorded(
+                facets=empty_facets,
+                code=str(identity.get("code") or ""),
+                name=str(identity.get("name") or ""),
+            )
+        else:
+            reason = "INSUFFICIENT_EVIDENCE"
+            refusal = LOI_KE_HOACH[reason]
     patch.update(
         outcome=Outcome.ABSTAINED.value,
         branch_signal=BranchSignal.EMPTY.value,
-        refusal=LOI_KE_HOACH.get(reason, LOI_KE_HOACH["INSUFFICIENT_EVIDENCE"]),
+        refusal=refusal,
         branch_reason=f"plan: {reason}",
     )
     return patch

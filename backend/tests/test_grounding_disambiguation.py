@@ -76,10 +76,15 @@ def test_mention_document_khong_khop_thi_thu_lai_nhu_thu_tuc(monkeypatch) -> Non
     async def noop(*_args, **_kwargs):
         return None
 
+    async def empty_vocabulary():
+        return []
+
     monkeypatch.setattr(grounding, "_ground_document", fake_document)
     monkeypatch.setattr(grounding, "_ground_procedure", fake_procedure)
     monkeypatch.setattr(grounding, "_apply_disambiguation", noop)
     monkeypatch.setattr(grounding, "_apply_theme_agreement", noop)
+    # Test này kiểm tra fallback document → procedure, không phụ thuộc Neo4j.
+    monkeypatch.setattr(grounding, "_vocabulary", empty_vocabulary)
 
     frame = {
         "schema_version": "1.0",

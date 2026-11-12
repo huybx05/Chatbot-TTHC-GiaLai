@@ -1,11 +1,16 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  bulkDeleteAdminFaqs,
+  bulkSetAdminFaqStatus,
   createAdminFaq,
   deleteAdminFaq,
+  downloadAdminFaqExport,
+  downloadAdminFaqTemplate,
   getAdminFaqIntents,
   getAdminFaqs,
   getAdminProcedures,
+  importAdminFaqs,
   updateAdminFaq,
   type AdminFaq,
   type AdminFaqIntent,
@@ -53,6 +58,13 @@ export default function FaqPage() {
   const [procedureOpen, setProcedureOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [exportStatus, setExportStatus] = useState<"all" | "ready" | "draft">("all");
+  const [exportProcedure, setExportProcedure] = useState("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filteredProcedures = useMemo(() => {
     const query = searchKey(procedureQuery.trim());
@@ -78,8 +90,32 @@ export default function FaqPage() {
 
   const readyCount = items.filter((item) => item.status === "ready").length;
   const draftCount = items.filter((item) => item.status !== "ready").length;
+  const allVisibleSelected =
+    visibleItems.length > 0 &&
+    visibleItems.every((item) => selectedIds.has(item.id));
 
   const isNew = selectedId === "";
+
+  function toggleSelected(id: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function toggleSelectAll() {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (allVisibleSelected) {
+        visibleItems.forEach((item) => next.delete(item.id));
+      } else {
+        visibleItems.forEach((item) => next.add(item.id));
+      }
+      return next;
+    });
+  }
 
   function intentLabel(value: string) {
     return intents.find((item) => item.value === value)?.label ?? value;
@@ -138,6 +174,7 @@ export default function FaqPage() {
 
   function switchTab(nextTab: FaqTab) {
     setTab(nextTab);
+    setSelectedIds(new Set());
     const first = items.find((item) => item.status === nextTab);
     if (first) selectFaq(first);
     else startNew();
@@ -187,6 +224,94 @@ export default function FaqPage() {
     }
   }
 
+  async function removeSelected() {
+    if (selectedIds.size === 0) return;
+    if (
+      !window.confirm(
+        `Xoá ${selectedIds.size} FAQ đã chọn? Thao tác này không thể hoàn tác.`,
+      )
+    ) {
+      return;
+    }
+    setBulkBusy(true);
+    setError("");
+    setNotice("");
+    const count = selectedIds.size;
+    try {
+      await bulkDeleteAdminFaqs([...selectedIds]);
+      setSelectedIds(new Set());
+      await reload();
+      setNotice(`Đã xoá ${count} FAQ.`);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Không xoá được FAQ.");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function setSelectedStatus(status: "ready" | "draft") {
+    if (selectedIds.size === 0) return;
+    setBulkBusy(true);
+    setError("");
+    setNotice("");
+    const count = selectedIds.size;
+    try {
+      await bulkSetAdminFaqStatus([...selectedIds], status);
+      setSelectedIds(new Set());
+      await reload();
+      setNotice(`Đã cập nhật ${count} FAQ.`);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Không cập nhật được FAQ.",
+      );
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function handleImport(file: File | undefined) {
+    if (!file) return;
+    setImportBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await importAdminFaqs(file);
+      await reload();
+      setNotice(`Đã import ${result.imported} FAQ.`);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Không import được FAQ.",
+      );
+    } finally {
+      setImportBusy(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  }
+
+  async function handleExport() {
+    setError("");
+    setNotice("");
+    try {
+      await downloadAdminFaqExport(exportStatus, exportProcedure);
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Không xuất được FAQ.",
+      );
+    }
+  }
+
+  async function handleTemplate() {
+    setError("");
+    setNotice("");
+    try {
+      await downloadAdminFaqTemplate();
+    } catch (reason) {
+      setError(
+        reason instanceof Error ? reason.message : "Không tải được file mẫu.",
+      );
+    }
+  }
+
   return (
     <>
       <PageHeader
@@ -200,20 +325,85 @@ export default function FaqPage() {
           {error}
         </div>
       ) : null}
+      {notice ? (
+        <div className="mb-4 rounded-lg border border-green-200 bg-green-50 p-3 text-sm font-semibold text-green-700">
+          {notice}
+        </div>
+      ) : null}
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_440px]">
         <Card>
-          <div className="mb-3 flex items-center justify-between gap-2">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
             <p className="text-sm font-semibold text-text-secondary">
               Danh sách câu hỏi
             </p>
-            <button
-              type="button"
-              onClick={startNew}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-white hover:bg-primary-hover"
-            >
-              + Thêm FAQ
-            </button>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                aria-label="Import FAQ từ Excel"
+                title="Import FAQ từ Excel"
+                disabled={importBusy}
+                onClick={() => fileInputRef.current?.click()}
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-green-200 bg-green-50 text-green-700 transition hover:border-green-500 hover:bg-green-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span className="material-symbols-outlined text-[20px]">
+                  upload_file
+                </span>
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx"
+                className="hidden"
+                onChange={(event) => void handleImport(event.target.files?.[0])}
+              />
+              <select
+                aria-label="Phạm vi export FAQ"
+                value={exportStatus}
+                onChange={(event) =>
+                  setExportStatus(event.target.value as "all" | "ready" | "draft")
+                }
+                className="h-9 rounded-lg border border-border-color bg-white px-2 text-xs font-semibold outline-primary"
+              >
+                <option value="all">Toàn bộ FAQ</option>
+                <option value="ready">FAQ đang hoạt động</option>
+                <option value="draft">FAQ bản nháp</option>
+              </select>
+              <input
+                value={exportProcedure}
+                onChange={(event) => setExportProcedure(event.target.value)}
+                placeholder="Mã thủ tục"
+                aria-label="Mã thủ tục cần export"
+                className="h-9 w-28 rounded-lg border border-border-color bg-white px-2 text-xs outline-primary"
+              />
+              <button
+                type="button"
+                onClick={() => void handleExport()}
+                className="flex h-9 items-center gap-1 rounded-lg border border-border-color px-3 text-xs font-bold text-text-primary hover:bg-secondary-surface"
+              >
+                <span className="material-symbols-outlined text-[18px]">
+                  download
+                </span>
+                Xuất Excel
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleTemplate()}
+                className="flex h-9 items-center gap-1 rounded-lg border border-border-color px-3 text-xs font-bold text-text-primary hover:bg-secondary-surface"
+              >
+                <span className="material-symbols-outlined text-[18px]">
+                  description
+                </span>
+                File mẫu
+              </button>
+              <button
+                type="button"
+                onClick={startNew}
+                className="rounded-lg bg-primary px-4 py-2 text-sm font-bold text-white hover:bg-primary-hover"
+              >
+                + Thêm FAQ
+              </button>
+            </div>
           </div>
 
           <div className="mb-3 flex gap-2 border-b border-border-color">
@@ -241,32 +431,94 @@ export default function FaqPage() {
             </button>
           </div>
 
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border-color bg-secondary-surface/40 px-3 py-2">
+            <label className="flex items-center gap-2 text-xs font-semibold text-text-secondary">
+              <input
+                type="checkbox"
+                checked={allVisibleSelected}
+                onChange={toggleSelectAll}
+                aria-label="Chọn tất cả FAQ trong tab hiện tại"
+                className="h-4 w-4 accent-primary"
+              />
+              Chọn tất cả trong tab này
+            </label>
+            {selectedIds.size > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold text-primary">
+                  Đã chọn {selectedIds.size}
+                </span>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void setSelectedStatus("ready")}
+                  className="rounded-md border border-green-200 bg-green-50 px-2 py-1 text-xs font-bold text-green-700 hover:bg-green-100 disabled:opacity-60"
+                >
+                  Đang hoạt động
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void setSelectedStatus("draft")}
+                  className="rounded-md border border-border-color bg-white px-2 py-1 text-xs font-bold text-text-secondary hover:bg-secondary-surface disabled:opacity-60"
+                >
+                  Bản nháp
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void removeSelected()}
+                  className="rounded-md border border-danger px-2 py-1 text-xs font-bold text-danger hover:bg-danger-surface disabled:opacity-60"
+                >
+                  Xoá đã chọn
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSelectedIds(new Set())}
+                  className="text-xs font-semibold text-text-secondary underline"
+                >
+                  Bỏ chọn
+                </button>
+              </div>
+            ) : null}
+          </div>
+
           <div className="space-y-2">
             {visibleItems.map((item) => (
-              <button
+              <div
                 key={item.id}
-                type="button"
-                onClick={() => selectFaq(item)}
-                className={`w-full rounded-lg border p-3 text-left transition ${
+                className={`flex items-start gap-2 rounded-lg border p-3 transition ${
                   item.id === selectedId
                     ? "border-primary bg-primary-soft/60"
                     : "border-border-color hover:bg-secondary-surface"
                 }`}
               >
-                <p className="font-bold leading-6">{item.question}</p>
-                <p className="mt-1 line-clamp-2 text-sm text-text-secondary">
-                  {item.answer}
-                </p>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <Badge tone="muted">{intentLabel(item.intent)}</Badge>
-                  {item.procedure_code ? (
-                    <Badge tone="info">{item.procedure_code}</Badge>
-                  ) : null}
-                  <Badge tone={item.status === "ready" ? "ok" : "muted"}>
-                    {statusLabel(item.status)}
-                  </Badge>
-                </div>
-              </button>
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(item.id)}
+                  onChange={() => toggleSelected(item.id)}
+                  aria-label={`Chọn FAQ: ${item.question}`}
+                  className="mt-1 h-4 w-4 shrink-0 accent-primary"
+                />
+                <button
+                  type="button"
+                  onClick={() => selectFaq(item)}
+                  className="min-w-0 flex-1 text-left"
+                >
+                  <p className="font-bold leading-6">{item.question}</p>
+                  <p className="mt-1 line-clamp-2 text-sm text-text-secondary">
+                    {item.answer}
+                  </p>
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Badge tone="muted">{intentLabel(item.intent)}</Badge>
+                    {item.procedure_code ? (
+                      <Badge tone="info">{item.procedure_code}</Badge>
+                    ) : null}
+                    <Badge tone={item.status === "ready" ? "ok" : "muted"}>
+                      {statusLabel(item.status)}
+                    </Badge>
+                  </div>
+                </button>
+              </div>
             ))}
 
             {visibleItems.length === 0 ? (

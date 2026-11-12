@@ -95,7 +95,11 @@ def test_verified_code_is_resolved_without_calling_resolver(monkeypatch) -> None
     def reject(*_a, **_k):
         raise AssertionError("có mã đã xác minh thì không được gọi resolver")
 
+    async def fake_names():
+        return {"1.001699": "Cấp Giấy xác nhận khuyết tật"}
+
     monkeypatch.setattr(resolver, "resolve_procedure", reject)
+    monkeypatch.setattr(resolver, "procedure_names", fake_names)
     items = asyncio.run(
         ground_frame(
             _frame([("procedure", "thủ tục 1.001699")]),
@@ -104,6 +108,7 @@ def test_verified_code_is_resolved_without_calling_resolver(monkeypatch) -> None
     )
     assert items[0].status == "resolved"
     assert items[0].code == "1.001699"
+    assert items[0].name == "Cấp Giấy xác nhận khuyết tật"
     assert items[0].method == "code"
 
 

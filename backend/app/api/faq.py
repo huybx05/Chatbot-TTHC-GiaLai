@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel
@@ -66,8 +67,13 @@ def list_faq_intents() -> list[FaqIntent]:
 
 @router.get("/suggestions", response_model=FaqSuggestionList)
 def list_faq_suggestions(
-    limit: int = Query(default=5, ge=1, le=20),
+    limit: int = Query(default=3, ge=1, le=20),
 ) -> FaqSuggestionList:
+    """FAQ toàn cục dùng cho màn hình chào.
+
+    Không trả FAQ gắn thủ tục ở đây; các FAQ đó chỉ xuất hiện dưới dạng
+    gợi ý sau câu trả lời RAG.
+    """
     with engine.connect() as conn:
         rows = conn.execute(
             text(
@@ -75,6 +81,7 @@ def list_faq_suggestions(
                 SELECT faq_id::text AS id, question
                 FROM faq
                 WHERE status = 'ready'
+                  AND NULLIF(procedure_code, '') IS NULL
                 ORDER BY priority DESC, updated_at DESC
                 LIMIT :limit
                 """
@@ -107,12 +114,13 @@ def suggest_ready_faqs(
     exclude_questions: Iterable[str] = (),
     limit: int = 3,
 ) -> list[dict[str, str]]:
-    """FAQ gợi ý theo thủ tục, bỏ facet đã hỏi và câu trùng.
+    """FAQ gợi ý theo thủ tục hoặc FAQ toàn cục, bỏ facet đã hỏi và câu trùng.
 
-    Phase 1: lọc cấu trúc, không vector, không Graph. Mỗi intent chỉ lấy một câu
-    ở vòng đầu để gợi ý đa dạng; nếu chưa đủ thì lấp bằng các intent còn lại.
+    Có ``procedure_code``: lọc FAQ cùng thủ tục.
+    Không có ``procedure_code``: lấy FAQ không gắn thủ tục, ưu tiên priority
+    và cập nhật gần nhất. Không dùng so khớp token.
     """
-    if not procedure_code or limit <= 0:
+    if limit <= 0:
         return []
 
     excluded_intents = {
@@ -136,7 +144,11 @@ def suggest_ready_faqs(
                 SELECT faq_id::text AS id, question, answer, intent
                   FROM faq
                  WHERE status = 'ready'
-                   AND procedure_code = :procedure_code
+                   AND (
+                        (CAST(:procedure_code AS VARCHAR) IS NULL
+                         AND NULLIF(procedure_code, '') IS NULL)
+                        OR procedure_code = CAST(:procedure_code AS VARCHAR)
+                   )
                  ORDER BY priority DESC, updated_at DESC
                 """
             ),
@@ -179,27 +191,31 @@ def suggest_ready_faqs(
     return selected
 
 
-def find_ready_faq(question: str) -> dict[str, Any] | None:
-    """Tìm FAQ đã duyệt khớp chính xác sau khi chuẩn hoá câu hỏi."""
-    target = _normalize_question(question)
-    if not target:
-        return None
+def find_ready_faq_by_id(faq_id: UUID) -> dict[str, Any] | None:
+    """Lấy FAQ đã duyệt theo ID người dùng đã chọn.
 
+    Không dùng để tự khớp câu hỏi gõ tay. Luôn đọc lại từ DB và kiểm tra
+    ``status = 'ready'``; client không bao giờ cung cấp nội dung trả lời.
+    """
     with engine.connect() as conn:
-        rows = conn.execute(
+        row = conn.execute(
             text(
                 """
-                SELECT faq_id::text AS id, question, answer, intent,
-                       procedure_code, procedure_name
-                FROM faq
-                WHERE status = 'ready'
-                ORDER BY updated_at DESC
+                SELECT f.faq_id::text AS id,
+                       f.question,
+                       f.answer,
+                       f.intent,
+                       f.procedure_code,
+                       f.procedure_name,
+                       COALESCE(f.detail_url, p.detail_url) AS detail_url
+                  FROM faq AS f
+                  LEFT JOIN procedures AS p
+                    ON p.procedure_code = f.procedure_code
+                 WHERE f.faq_id = :faq_id
+                   AND f.status = 'ready'
                 """
-            )
-        ).mappings().all()
+            ),
+            {"faq_id": faq_id},
+        ).mappings().first()
 
-    for row in rows:
-        if _normalize_question(str(row["question"])) == target:
-            return dict(row)
-
-    return None
+    return dict(row) if row is not None else None

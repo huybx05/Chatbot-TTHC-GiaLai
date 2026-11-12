@@ -53,10 +53,18 @@ def load_interlinked_components() -> dict[str, list[dict[str, str]]]:
     result: dict[str, list[dict[str, str]]] = {}
     for parent_code, payload in raw.items():
         components = payload.get("components", []) if isinstance(payload, dict) else []
+        source_url = (
+            str(payload.get("source_url") or "").strip()
+            if isinstance(payload, dict)
+            else ""
+        )
         result[str(parent_code)] = [
             {
                 "code": str(item.get("code") or "").strip(),
                 "name": str(item.get("name") or "").strip(),
+                "source_code": str(item.get("source_code") or item.get("code") or "").strip(),
+                "source_url": str(item.get("source_url") or source_url).strip(),
+                "note": str(item.get("note") or "").strip(),
             }
             for item in components
             if isinstance(item, dict) and str(item.get("code") or "").strip()
@@ -495,7 +503,10 @@ SET n.ten = coalesce(n.ten, r.ten), n.name = coalesce(n.name, r.ten),
     n.is_inferred = coalesce(r.is_inferred, true)
 MERGE (t)-[e:{rel_type}]->(n)
 SET e.is_inferred = coalesce(r.is_inferred, true),
-    e.component_name = r.ten
+    e.component_name = r.ten,
+    e.source_code = coalesce(r.source_code, ""),
+    e.source_url = coalesce(r.source_url, ""),
+    e.note = coalesce(r.note, "")
 """
 
 
@@ -623,6 +634,9 @@ def main(argv: list[str] | None = None) -> int:
                         "key": component["code"],
                         "ma": component["code"],
                         "ten": component["name"],
+                        "source_code": component.get("source_code", ""),
+                        "source_url": component.get("source_url", ""),
+                        "note": component.get("note", ""),
                         "is_inferred": False,
                     }
                 )

@@ -87,8 +87,24 @@ class _Result:
         },
         "question_frame": {"scope": "tthc"},
         "groundings": [{"code": "1.001699", "status": "resolved"}],
-        "plan": {"tasks": []},
-        "coverage": [{"status": "covered"}],
+        "plan": {
+            "tasks": [
+                {
+                    "request_index": 0,
+                    "tool": "section_lookup",
+                    "facet": "required_documents",
+                    "operation": "get",
+                }
+            ]
+        },
+        "coverage": [
+            {
+                "request_index": 0,
+                "status": "covered",
+                "facet": "required_documents",
+                "tool": "section_lookup",
+            }
+        ],
         "evidence": [{"kind": "section", "content": "Hồ sơ cần nộp", "request_index": 0}],
     }
 
@@ -106,7 +122,7 @@ def test_append_writes_one_json_object(monkeypatch, tmp_path) -> None:
     assert rows[0]["evidence"][0]["content"] == "Hồ sơ cần nộp"
 
 
-def test_trace_v3_co_du_truong_chan_doan(monkeypatch, tmp_path) -> None:
+def test_trace_v4_co_du_truong_chan_doan(monkeypatch, tmp_path) -> None:
     path = tmp_path / "workflow.jsonl"
     monkeypatch.setenv("WORKFLOW_TRACE_JSONL_PATH", str(path))
     result = _Result()
@@ -120,7 +136,7 @@ def test_trace_v3_co_du_truong_chan_doan(monkeypatch, tmp_path) -> None:
     }
     trace_log.append(result, source="chat_stream", phase="final")
     row = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
-    assert row["trace_version"] == 3
+    assert row["trace_version"] == 4
     assert row["source"] == "chat_stream"
     assert row["phase"] == "final"
     assert row["plan_class"] == "direct"
@@ -134,6 +150,22 @@ def test_trace_v3_co_du_truong_chan_doan(monkeypatch, tmp_path) -> None:
     assert "discovery" not in row
     assert "request_plan_class" not in row
     assert "fallbacks" not in row
+
+
+def test_trace_ghi_ro_ke_hoach_va_nguon_thuc_thi(monkeypatch, tmp_path) -> None:
+    path = tmp_path / "workflow.jsonl"
+    monkeypatch.setenv("WORKFLOW_TRACE_JSONL_PATH", str(path))
+
+    trace_log.append(_Result())
+
+    row = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
+    task = row["plan"]["tasks"][0]
+    coverage = row["coverage"][0]
+    assert task["planned_tool"] == "section_lookup"
+    assert task["planned_source"] == "PostgreSQL - mục nội dung"
+    assert coverage["executed_tool"] == "section_lookup"
+    assert coverage["executed_source"] == "PostgreSQL - mục nội dung"
+    assert coverage["evidence_count"] == 1
 
 
 def test_trace_ghi_ba_tang_procedure(monkeypatch, tmp_path) -> None:

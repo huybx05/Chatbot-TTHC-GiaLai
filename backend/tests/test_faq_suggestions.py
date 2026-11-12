@@ -98,3 +98,33 @@ def test_suggest_loc_theo_thu_tuc_facet_va_uu_tien(monkeypatch) -> None:
         limit=3,
     )
     assert [item["id"] for item in filtered] == ["1", "4"]
+
+
+def test_goi_y_faq_toan_cuc_theo_do_trung_cau_hoi(monkeypatch) -> None:
+    rows = [
+        {
+            "id": "global-hours",
+            "question": "Thời gian làm việc của trung tâm là vào mấy giờ?",
+            "answer": "Từ 7h30 đến 16h30.",
+            "intent": "processing_time",
+            "priority": 0,
+        },
+        {
+            "id": "global-address",
+            "question": "Địa chỉ trung tâm ở đâu?",
+            "answer": "Số 1 đường Trần Phú.",
+            "intent": "general_info",
+            "priority": 0,
+        },
+    ]
+    monkeypatch.setattr(faq, "engine", _FakeEngine(rows))
+
+    result = faq.suggest_ready_faqs(
+        None,
+        exclude_question=(
+            "Địa chỉ của trung tâm phục vụ hành chính công tỉnh Gia Lai là ở đâu?"
+        ),
+        limit=3,
+    )
+
+    assert {item["id"] for item in result} == {"global-hours", "global-address"}

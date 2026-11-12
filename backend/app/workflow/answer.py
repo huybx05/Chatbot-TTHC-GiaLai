@@ -96,6 +96,8 @@ Khi ngữ cảnh có nhiều trường hợp (case) của cùng một thủ tụ
 trường hợp. Nếu người dùng hỏi chung, trả đủ tất cả trường hợp có trong ngữ cảnh, mỗi trường
 hợp một nhóm và nêu rõ tên trường hợp. Nếu người dùng hỏi một trường hợp cụ thể, chỉ trả lời
 trường hợp đó. Không lấy hồ sơ của trường hợp này bù sang trường hợp khác.
+Với câu hỏi hồ sơ chung, phải giữ đủ mọi giấy tờ và mọi mục "Lưu ý" có trong ngữ cảnh;
+không được tóm tắt, không được bỏ mục, không được gộp Lưu ý vào giấy tờ.
 
 Nếu hai ý trong câu hỏi dùng chung một nguồn dữ liệu, không được nói ý sau “chưa có dữ liệu”
 chỉ vì ý đó không có nguồn riêng. Chỉ nói thiếu khi trạng thái của chính ý đó là thiếu.
@@ -184,7 +186,8 @@ có."* Không cố suy diễn, không trích dẫn gượng ép.
 - Không gộp hai thủ tục khác nhau vào một câu trả lời.
 - Không nói "theo quy định chung" hay "theo pháp luật hiện hành" khi ngữ cảnh không nêu.
 - Không hứa hẹn về thời gian xử lý thực tế ngoài con số trong ngữ cảnh.
-- Không thêm phần "Lưu ý" hay "Khuyến nghị" nếu người dùng không hỏi.
+- Không thêm phần "Lưu ý" ngoài ngữ cảnh. Nếu ngữ cảnh có case "Lưu ý" và câu hỏi là
+  hồ sơ chung, phải nêu đầy đủ case đó; nếu người dùng hỏi riêng, chỉ nêu case đó.
 - Không in đường dẫn, không in số hiệu nguồn.
 """
 
@@ -200,6 +203,7 @@ NHAN_NGUON = {
 #: Nhãn tiếng Việt của chín khía cạnh — dùng khi nói với mô hình "mục này không có dữ liệu".
 NHAN_KHIA_CANH = {
     "required_documents": "thành phần hồ sơ",
+    "notes": "lưu ý của hồ sơ",
     "steps": "trình tự thực hiện",
     "submission_method": "cách thức nộp / nơi nộp",
     "receiving_agency": "cơ quan tiếp nhận / nộp ở đâu",
@@ -221,6 +225,9 @@ NHAN_KHIA_CANH = {
     "status": "trạng thái thủ tục",
     "target_audience": "đối tượng thực hiện",
     "related_procedures": "thủ tục liên quan",
+    "components": "thủ tục thành phần",
+    "parent_interlinked": "thủ tục cha / liên thông",
+    "procedure_relations": "quan hệ thủ tục",
 }
 
 #: Câu cho từng trạng thái coverage. Không được gộp ``failed``/``unsupported``/``ambiguous``
@@ -269,6 +276,14 @@ def _nhan_muc(muc: dict[str, Any]) -> str:
     """Một dòng tiêu đề cho mục ngữ cảnh: nguồn · thủ tục · loại thông tin."""
     nguon = NHAN_NGUON.get(str(muc.get("kind") or ""), "?")
     phan = [f"Nguồn: {nguon}"]
+    metadata = muc.get("metadata") or {}
+    subject_code = str(metadata.get("subject_code") or "")
+    if subject_code:
+        subject_name = str(metadata.get("subject_name") or "")
+        phan.append(
+            f"Quan hệ của thủ tục {subject_code}"
+            + (f" — {subject_name}" if subject_name else "")
+        )
 
     ma = str(muc.get("procedure_code") or "")
     ten = str(muc.get("procedure_name") or "")
@@ -726,6 +741,133 @@ def build_fallback_answer(
     return "\n\n".join(phan).strip()
 
 
+def _case_label(item: dict[str, Any]) -> str:
+    metadata = item.get("metadata") or {}
+    name = " ".join(str(metadata.get("case_name") or "").split())
+    name = name.strip("*-: ").strip()
+    if name:
+        return name
+    return "Nội dung chung"
+
+
+def _strip_case_prefix(content: str, label: str) -> str:
+    """Bỏ tiền tố lặp ``Trường hợp: * <case>:`` khỏi nội dung một section.
+
+    Nguồn dữ liệu có nhiều cách ghi cùng một nhãn case:
+
+    - ``Trường hợp: * Giấy tờ phải nộp: - ...``
+    - ``**Đối với trường hợp ...** - Đối với trường hợp ... - + ...``
+
+    Hàm lặp nhiều lần vì nhãn có thể xuất hiện hai lần liên tiếp và có thể
+    được bọc markdown. Không cắt phần nội dung phía sau các tiền tố này.
+    """
+    text = _clean_context(content).strip()
+    label = label.strip("*-: ").strip()
+    if not label:
+        return text.lstrip(" -+*").strip()
+
+    def candidates() -> tuple[str, ...]:
+        return (
+            f"**{label}**:",
+            f"**{label}**",
+            f"__{label}__",
+            f"*{label}*",
+            f"_{label}_",
+            f"* {label}:",
+            f"* {label} -",
+            f"- {label}:",
+            f"- {label} -",
+            f"+ {label}:",
+            f"+ {label} -",
+            f"{label}:",
+            f"{label} -",
+            f"{label} –",
+            f"{label} —",
+        )
+
+    for _ in range(5):
+        before = text
+        text = text.lstrip(" -–—+")
+        if text.casefold().startswith("trường hợp:"):
+            text = text[len("trường hợp:") :].lstrip(" :-–—+*")
+        for candidate in candidates():
+            if candidate and text.casefold().startswith(candidate.casefold()):
+                text = text[len(candidate) :].lstrip(" :-–—+*")
+                break
+        if text == before:
+            break
+
+    return text.strip()
+
+
+def _is_document_request(requests: Sequence[dict[str, Any]]) -> bool:
+    return len(requests) == 1 and str(requests[0].get("facet") or "") in {
+        "required_documents",
+        "notes",
+    }
+
+
+def build_required_documents_answer(
+    evidence: Sequence[dict[str, Any]],
+    *,
+    requests: Sequence[dict[str, Any]] = (),
+    coverage: Sequence[dict[str, Any]] = (),
+) -> str:
+    """Trả **nguyên văn** toàn bộ mục hồ sơ theo case, không tóm tắt.
+
+    Đây là câu trả lời tất định cho câu hỏi hồ sơ: mọi section đã truy xuất
+    đều được đưa vào, kể cả case "Lưu ý". Câu hỏi riêng "Lưu ý" chỉ có
+    evidence của case đó nên cũng chỉ trả case đó.
+    """
+    allowed = {"required_documents", "notes"}
+    items = [
+        item
+        for item in evidence
+        if str(item.get("facet") or "") in allowed
+        and " ".join(str(item.get("content") or "").split())
+    ]
+    if not items:
+        return ""
+
+    first = items[0]
+    code = str(first.get("procedure_code") or "")
+    name = str(first.get("procedure_name") or "")
+    procedure_label = f"thủ tục {code}" + (f" ({name})" if name else "")
+    if not code and not name:
+        procedure_label = "hồ sơ"
+
+    facet = str((requests[0] if requests else {}).get("facet") or "")
+    if facet == "notes":
+        heading = f"Lưu ý của {procedure_label}"
+    elif code or name:
+        heading = f"Thủ tục {code}" + (f" ({name})" if name else "")
+    else:
+        heading = "Hồ sơ"
+
+    groups: dict[tuple[int, str], list[dict[str, Any]]] = {}
+    for item in items:
+        metadata = item.get("metadata") or {}
+        order = int(metadata.get("case_order") or 0)
+        key = (order, _case_label(item))
+        groups.setdefault(key, []).append(item)
+
+    parts = [heading + ":"]
+    for (_order, label), group in sorted(
+        groups.items(), key=lambda pair: (pair[0][0], pair[0][1])
+    ):
+        parts.append(f"\n**{label}**")
+        seen: set[str] = set()
+        for item in group:
+            content = _strip_case_prefix(_context_content(item), label)
+            if not content or content in seen:
+                continue
+            seen.add(content)
+            parts.append(f"- {content}")
+
+    # Không có nội dung sau khi lọc thì không được bịa.
+    return "\n".join(parts).strip() if len(parts) > 1 else ""
+
+
 def build_messages(
     question: str,
     evidence: Sequence[dict[str, Any]],
@@ -846,6 +988,26 @@ async def sinh(
     Không bao giờ trả câu trả lời rỗng mà không nói lý do: nơi gọi cần biết để hiện bằng chứng
     thay vì một khung trống.
     """
+    if _is_document_request(requests):
+        text = build_required_documents_answer(
+            evidence,
+            requests=requests,
+            coverage=coverage,
+        )
+        if text:
+            return AnswerResult(
+                text=text,
+                citations=build_citations(
+                    evidence,
+                    requests=requests,
+                    coverage=coverage,
+                ),
+                ms=0,
+                tokens_in=0,
+                tokens_out=0,
+                model="deterministic_required_documents",
+            )
+
     if not dang_bat():
         raise AnswerError("chưa cấu hình SYNTHESIZER_MODEL_NAME / DEEPSEEK_BASE_URL")
 
@@ -925,6 +1087,16 @@ async def sinh_stream(
     Ném :class:`AnswerError` nếu **chưa** phát được mẩu nào (lỗi cấu hình, mạng, mô hình trả
     rỗng) — nơi gọi cần biết để nói lý do thay vì im lặng. Lỗi giữa dòng thì dừng generator.
     """
+    if _is_document_request(requests):
+        text = build_required_documents_answer(
+            evidence,
+            requests=requests,
+            coverage=coverage,
+        )
+        if text:
+            yield text
+            return
+
     if not dang_bat():
         raise AnswerError("chưa cấu hình SYNTHESIZER_MODEL_NAME / DEEPSEEK_BASE_URL")
 

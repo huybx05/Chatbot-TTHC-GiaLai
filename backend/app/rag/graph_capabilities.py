@@ -33,6 +33,9 @@ FORWARD_CAPABILITY: dict[str, Capability] = {
     Facet.TARGET_AUDIENCE.value: Capability("AUDIENCE"),
     Facet.RESULT.value: Capability("RESULT"),
     Facet.LEGAL_BASIS.value: Capability("LEGAL_BASIS_OF_PROCEDURE"),
+    Facet.COMPONENTS.value: Capability("COMPONENTS_OF_PROCEDURE", ("THANH_PHAN_CUA",)),
+    Facet.PROCEDURE_RELATIONS.value: Capability("PROCEDURE_RELATIONS"),
+    Facet.RELATED_PROCEDURES.value: Capability("PROCEDURE_RELATIONS"),
 }
 
 #: Reverse templates: the subject is an entity (agency, level, field, group), no code.
@@ -44,6 +47,9 @@ REVERSE_CAPABILITY: dict[str, Capability] = {
     Facet.ADMINISTRATIVE_LEVEL.value: Capability("PROCEDURES_BY_LEVEL"),
     Facet.FIELD.value: Capability("PROCEDURES_BY_FIELD"),
     Facet.DOMAIN_GROUP.value: Capability("PROCEDURES_BY_GROUP"),
+    Facet.PARENT_INTERLINKED.value: Capability(
+        "PROCEDURES_BY_COMPONENT", ("THANH_PHAN_CUA",)
+    ),
 }
 
 #: Grounding type → the facet whose reverse template can list procedures.

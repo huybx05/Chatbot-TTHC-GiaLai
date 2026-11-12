@@ -53,6 +53,7 @@ TOOL_FACT = "fact_lookup"
 SECTION_FACETS = frozenset(
     {
         Facet.REQUIRED_DOCUMENTS.value,
+        Facet.NOTES.value,
         Facet.STEPS.value,
         Facet.SUBMISSION_METHOD.value,
         Facet.RECEIVING_AGENCY.value,
@@ -66,7 +67,12 @@ SECTION_FACETS = frozenset(
 
 AGGREGATE_OPERATIONS = frozenset({RequestOperation.LIST.value, RequestOperation.COUNT.value})
 UNSUPPORTED_OPERATIONS = frozenset({RequestOperation.RANK.value})
-UNSUPPORTED_FACETS = frozenset({Facet.RELATED_PROCEDURES.value, Facet.UNKNOWN.value})
+UNSUPPORTED_FACETS = frozenset({Facet.UNKNOWN.value})
+
+#: Facets whose subject is the child and whose useful traversal is child → parent.
+#: A procedure code is still present (the child code), but the forward template would
+#: answer the wrong question, so the planner must choose the reverse capability.
+REVERSE_ONLY_FACETS = frozenset({Facet.PARENT_INTERLINKED.value})
 
 #: Constraints the reverse Graph templates can filter on (``Shape.filter_param``).
 REVERSE_CONSTRAINTS = frozenset({"agency", "field", "administrative_level", "domain_group"})
@@ -216,9 +222,12 @@ def _choose_tool(
         return "", "", (), REASON_UNSUPPORTED_FACET
 
     if facet in FORWARD_CAPABILITY or facet in REVERSE_CAPABILITY:
-        # With a code the forward template answers "what is X of this procedure"; without one
-        # the only meaningful template is the reverse one, which starts from an entity.
-        cap = FORWARD_CAPABILITY.get(facet) if codes else REVERSE_CAPABILITY.get(facet)
+        if facet in REVERSE_ONLY_FACETS:
+            cap = REVERSE_CAPABILITY.get(facet)
+        else:
+            # With a code the forward template answers "what is X of this procedure";
+            # without one the reverse template starts from an entity.
+            cap = FORWARD_CAPABILITY.get(facet) if codes else REVERSE_CAPABILITY.get(facet)
         if cap is None:
             return "", "", (), REASON_UNSUPPORTED_FACET
         return TOOL_GRAPH, cap.intent, cap.expected_types, ""
@@ -389,6 +398,7 @@ __all__ = [
     "REASON_UNSUPPORTED_OPERATION",
     "REVERSE_CAPABILITY",
     "REVERSE_CONSTRAINTS",
+    "REVERSE_ONLY_FACETS",
     "SECTION_FACETS",
     "TOOL_FACT",
     "TOOL_GRAPH",

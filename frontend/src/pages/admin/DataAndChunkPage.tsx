@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import {
+  downloadAdminProcedureExport,
   getAdminProcedure,
   getAdminProcedures,
   getAdminSections,
@@ -16,6 +17,7 @@ export default function DataAndChunkPage() {
   const [selectedCode, setSelectedCode] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSourceFields, setSelectedSourceFields] = useState<string[]>([]);
+  const [exportBusy, setExportBusy] = useState(false);
   const [detail, setDetail] = useState<AdminProcedureDetail | null>(null);
   const [sections, setSections] = useState<AdminSection[]>([]);
   const [selectedSection, setSelectedSection] = useState<AdminSection | null>(null);
@@ -35,6 +37,21 @@ export default function DataAndChunkPage() {
         ? current.filter((value) => value !== sourceField)
         : [...current, sourceField]
     ));
+  }
+
+  async function handleExport() {
+    setExportBusy(true);
+    setError("");
+    try {
+      await downloadAdminProcedureExport({
+        q: searchQuery,
+        sourceFields: selectedSourceFields,
+      });
+    } catch {
+      setError("Không xuất được báo cáo TTHC.");
+    } finally {
+      setExportBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -81,15 +98,15 @@ export default function DataAndChunkPage() {
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1.1fr)_420px]">
         <Card>
-          <div className="mb-4 grid gap-2 md:grid-cols-[1fr_240px]">
+          <div className="mb-4 flex flex-wrap items-center gap-2">
             <input
-              className="rounded-lg border border-border-color bg-white px-3 py-2 text-sm outline-primary"
+              className="h-10 min-w-[220px] flex-1 rounded-lg border border-border-color bg-white px-3 py-0 text-sm outline-primary"
               placeholder="Tìm mã hoặc tên thủ tục..."
               value={searchQuery}
               onChange={(event) => setSearchQuery(event.target.value)}
             />
-            <details className="relative">
-              <summary className="flex cursor-pointer list-none items-center justify-between rounded-lg border border-border-color bg-white px-3 py-2 text-sm [&::-webkit-details-marker]:hidden">
+            <details className="relative h-10 w-[240px] shrink-0">
+              <summary className="flex h-10 cursor-pointer list-none items-center justify-between rounded-lg border border-border-color bg-white px-3 text-sm [&::-webkit-details-marker]:hidden">
                 {selectedSourceFields.length ? `Đã chọn ${selectedSourceFields.length} lĩnh vực` : "Toàn bộ lĩnh vực"}
                 <span className="material-symbols-outlined text-[18px] text-text-secondary">expand_more</span>
               </summary>
@@ -116,6 +133,17 @@ export default function DataAndChunkPage() {
                 </div>
               </div>
             </details>
+            <button
+              type="button"
+              disabled={exportBusy}
+              onClick={() => void handleExport()}
+              className="flex h-10 min-w-[128px] shrink-0 items-center justify-center gap-1 rounded-lg border border-border-color bg-white px-3 text-sm font-bold text-text-primary hover:bg-secondary-surface disabled:opacity-60"
+            >
+              <span className="material-symbols-outlined text-[18px]">
+                download
+              </span>
+              {exportBusy ? "Đang xuất..." : "Xuất Excel"}
+            </button>
           </div>
 
           <div className="overflow-x-auto xl:max-h-[calc(100vh-16rem)] xl:overflow-y-auto">

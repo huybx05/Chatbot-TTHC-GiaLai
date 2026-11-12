@@ -5,7 +5,7 @@ export default function FollowUpQuestions({
   onPick,
 }: {
   items: SuggestedQuestion[];
-  onPick: (text: string) => void;
+  onPick: (text: string, faqId?: string) => void;
 }) {
   if (items.length === 0) return null;
 
@@ -19,7 +19,7 @@ export default function FollowUpQuestions({
           <button
             key={item.id}
             type="button"
-            onClick={() => onPick(item.text)}
+            onClick={() => onPick(item.text, item.faqId ?? item.id)}
             className="rounded-full border border-border-color bg-card-surface px-3 py-1.5 text-left text-[13px] text-text-primary transition-colors hover:border-primary/50 hover:bg-primary-soft"
           >
             {item.text}

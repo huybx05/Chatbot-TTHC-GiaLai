@@ -12,11 +12,17 @@ này chỉ ghi bảng ``faq``, không đụng dữ liệu thủ tục.
 
 import logging
 import time
+from datetime import datetime
+from io import BytesIO
 from typing import Any, Literal
 from uuid import UUID
 
 from elasticsearch import Elasticsearch
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
 from pydantic import BaseModel, Field, field_validator
 from qdrant_client import QdrantClient
 from sqlalchemy import text
@@ -181,17 +187,71 @@ def system_status() -> dict[str, Any]:
     return {"services": services}
 
 
-@router.get("/conversations")
-def list_conversations(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
-    """Log các cặp hỏi–đáp gần nhất cho tab Log hội thoại.
-
-    Mỗi dòng là một assistant message; câu hỏi lấy từ user message gần nhất
-    trong cùng session trước thời điểm trả lời.
+def _conversation_where(
+    *,
+    date_range: str = "",
+    source: str = "",
+    feedback: str = "",
+    query: str = "",
+) -> tuple[str, dict[str, Any]]:
+    date_filter = {
+        "today": "m.created_at >= DATE_TRUNC('day', NOW())",
+        "7d": "m.created_at >= DATE_TRUNC('day', NOW()) - INTERVAL '6 days'",
+        "30d": "m.created_at >= DATE_TRUNC('day', NOW()) - INTERVAL '29 days'",
+    }.get(date_range, "TRUE")
+    source_filter = {
+        "": "TRUE",
+        "faq": "COALESCE(m.metadata ->> 'source', '') = 'faq'",
+        "faq_global": "COALESCE(m.metadata ->> 'source', '') = 'faq_global'",
+        "hybrid": "COALESCE(m.metadata ->> 'source', '') = 'hybrid'",
+        "fact_lookup": "COALESCE(m.metadata ->> 'source', '') = 'fact_lookup'",
+        "graph": "COALESCE(m.metadata ->> 'source', '') = 'graph'",
+        "none": "COALESCE(m.metadata ->> 'source', '') IN ('none', 'direct')",
+    }.get(source, "FALSE")
+    has_query = bool(query.strip())
+    where = f"""
+        m.role = 'assistant'
+        AND {date_filter}
+        AND {source_filter}
+        AND (
+            :feedback = ''
+            OR COALESCE(m.metadata -> 'feedback' ->> 'value', 'none') = :feedback
+        )
+        AND (
+            :has_query = FALSE
+            OR COALESCE(q.content, '') ILIKE :search
+            OR COALESCE(s.title, '') ILIKE :search
+            OR COALESCE(u.username, '') ILIKE :search
+        )
     """
+    return where, {
+        "feedback": feedback,
+        "search": f"%{query.strip()}%",
+        "has_query": has_query,
+    }
+
+
+def _conversation_rows(
+    *,
+    date_range: str = "",
+    source: str = "",
+    feedback: str = "",
+    query: str = "",
+    limit: int | None = None,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Đọc các lượt hỏi–đáp theo cùng điều kiện của bảng lịch sử."""
+    where, params = _conversation_where(
+        date_range=date_range,
+        source=source,
+        feedback=feedback,
+        query=query,
+    )
+    limit_clause = "LIMIT :limit OFFSET :offset" if limit is not None else ""
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                """
+                f"""
                 SELECT
                     m.id::text AS id,
                     m.session_id::text AS session_id,
@@ -213,38 +273,332 @@ def list_conversations(limit: int = Query(default=100, ge=1, le=500)) -> dict[st
                        ORDER BY created_at DESC
                        LIMIT 1
                   ) q ON true
-                 WHERE m.role = 'assistant'
+                 WHERE {where}
                  ORDER BY m.created_at DESC
-                 LIMIT :limit
+                 {limit_clause}
                 """
             ),
-            {"limit": limit},
+            {**params, **({"limit": limit, "offset": offset} if limit is not None else {})},
         ).mappings().all()
+    return [dict(row) for row in rows]
 
-    items: list[dict[str, Any]] = []
-    for row in rows:
-        metadata = row["metadata"] or {}
-        feedback = metadata.get("feedback") if isinstance(metadata, dict) else None
-        items.append(
-            {
-                "id": row["id"],
-                "session_id": row["session_id"],
-                "session_title": row["session_title"] or "Cuộc trò chuyện",
-                "user_name": row["username"] or "Khách",
-                "user_type": "auth" if row["username"] else "guest",
-                "question": row["question"] or "",
-                "answer": row["answer"] or "",
-                "created_at": row["created_at"].isoformat() if row["created_at"] else "",
-                "status": str(metadata.get("status") or ""),
-                "source": str(metadata.get("source") or ""),
-                "social_intent": str(metadata.get("social_intent") or ""),
-                "ttft_ms": metadata.get("ttft_ms"),
-                "total_ms": metadata.get("total_ms"),
-                "streamed": bool(metadata.get("streamed") or False),
-                "feedback": feedback if isinstance(feedback, dict) else None,
-            }
+
+def _conversation_total(
+    *,
+    date_range: str = "",
+    source: str = "",
+    feedback: str = "",
+    query: str = "",
+) -> int:
+    """Tổng số lượt khớp bộ lọc, dùng cho phân trang."""
+    where, params = _conversation_where(
+        date_range=date_range,
+        source=source,
+        feedback=feedback,
+        query=query,
+    )
+    with engine.connect() as conn:
+        value = conn.execute(
+            text(
+                f"""
+                SELECT COUNT(*)
+                  FROM chat_messages m
+                  JOIN chat_sessions s ON s.id = m.session_id
+                  LEFT JOIN users u ON u.id = s.user_id
+                  LEFT JOIN LATERAL (
+                      SELECT content
+                        FROM chat_messages
+                       WHERE session_id = m.session_id
+                         AND role = 'user'
+                         AND created_at <= m.created_at
+                       ORDER BY created_at DESC
+                       LIMIT 1
+                  ) q ON true
+                 WHERE {where}
+                """
+            ),
+            params,
+        ).scalar_one()
+    return int(value)
+
+
+def _conversation_ids(
+    *,
+    date_range: str = "",
+    source: str = "",
+    feedback: str = "",
+    query: str = "",
+) -> list[str]:
+    """Lấy toàn bộ ID assistant message khớp bộ lọc, cho Chọn tất cả."""
+    where, params = _conversation_where(
+        date_range=date_range,
+        source=source,
+        feedback=feedback,
+        query=query,
+    )
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                f"""
+                SELECT m.id::text AS id
+                  FROM chat_messages m
+                  JOIN chat_sessions s ON s.id = m.session_id
+                  LEFT JOIN users u ON u.id = s.user_id
+                  LEFT JOIN LATERAL (
+                      SELECT content
+                        FROM chat_messages
+                       WHERE session_id = m.session_id
+                         AND role = 'user'
+                         AND created_at <= m.created_at
+                       ORDER BY created_at DESC
+                       LIMIT 1
+                  ) q ON true
+                 WHERE {where}
+                 ORDER BY m.created_at DESC
+                """
+            ),
+            params,
+        ).mappings().all()
+    return [str(row["id"]) for row in rows]
+
+
+def _conversation_item(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = row["metadata"] or {}
+    feedback = metadata.get("feedback") if isinstance(metadata, dict) else None
+    return {
+        "id": row["id"],
+        "session_id": row["session_id"],
+        "session_title": row["session_title"] or "Cuộc trò chuyện",
+        "user_name": row["username"] or "Khách",
+        "user_type": "auth" if row["username"] else "guest",
+        "question": row["question"] or "",
+        "answer": row["answer"] or "",
+        "created_at": row["created_at"].isoformat() if row["created_at"] else "",
+        "status": str(metadata.get("status") or ""),
+        "source": str(metadata.get("source") or ""),
+        "social_intent": str(metadata.get("social_intent") or ""),
+        "ttft_ms": metadata.get("ttft_ms"),
+        "total_ms": metadata.get("total_ms"),
+        "streamed": bool(metadata.get("streamed") or False),
+        "feedback": feedback if isinstance(feedback, dict) else None,
+    }
+
+
+@router.get("/conversations")
+def list_conversations(
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    date_range: Literal["", "today", "7d", "30d"] = "",
+    source: str = "",
+    feedback: Literal["", "like", "dislike", "none"] = "",
+    q: str = "",
+) -> dict[str, Any]:
+    """Log các cặp hỏi–đáp gần nhất cho tab Log hội thoại, có phân trang."""
+    filters = {
+        "date_range": date_range,
+        "source": source,
+        "feedback": feedback,
+        "query": q,
+    }
+    rows = _conversation_rows(limit=limit, offset=offset, **filters)
+    return {
+        "items": [_conversation_item(row) for row in rows],
+        "total": _conversation_total(**filters),
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+
+
+class BulkConversationDeleteRequest(BaseModel):
+    ids: list[UUID] = Field(min_length=1, max_length=20_000)
+
+
+@router.get("/conversations/ids")
+def list_conversation_ids(
+    date_range: Literal["", "today", "7d", "30d"] = "",
+    source: str = "",
+    feedback: Literal["", "like", "dislike", "none"] = "",
+    q: str = "",
+) -> dict[str, Any]:
+    """Lấy toàn bộ ID khớp bộ lọc để Chọn tất cả xuyên trang."""
+    filters = {
+        "date_range": date_range,
+        "source": source,
+        "feedback": feedback,
+        "query": q,
+    }
+    ids = _conversation_ids(**filters)
+    return {"ids": ids, "total": len(ids)}
+
+
+@router.post("/conversations/bulk-delete")
+def bulk_delete_conversations(
+    payload: BulkConversationDeleteRequest,
+    _admin: AdminUser,
+) -> dict[str, Any]:
+    """Xoá nhiều lượt hỏi–đáp trong một giao dịch."""
+    with engine.begin() as conn:
+        deleted = conn.execute(
+            text(
+                """
+                WITH target AS (
+                    SELECT m.id AS assistant_id,
+                           (
+                               SELECT q.id
+                                 FROM chat_messages q
+                                WHERE q.session_id = m.session_id
+                                  AND q.role = 'user'
+                                  AND q.created_at <= m.created_at
+                                ORDER BY q.created_at DESC
+                                LIMIT 1
+                           ) AS question_id
+                      FROM chat_messages m
+                     WHERE m.role = 'assistant'
+                       AND m.id = ANY(:ids)
+                )
+                DELETE FROM chat_messages
+                 WHERE id IN (
+                     SELECT assistant_id FROM target
+                     UNION
+                     SELECT question_id FROM target WHERE question_id IS NOT NULL
+                 )
+                 RETURNING id
+                """
+            ),
+            {"ids": payload.ids},
+        ).all()
+    return {"deleted": len(deleted)}
+
+
+def _source_label(value: object) -> str:
+    return {
+        "faq": "FAQ",
+        "faq_global": "FAQ toàn cục",
+        "hybrid": "Hybrid",
+        "fact_lookup": "Fact lookup",
+        "graph": "Graph",
+        "direct": "Không truy xuất",
+        "none": "Không truy xuất",
+    }.get(str(value or ""), "Chưa xác định")
+
+
+def _citations_text(items: object) -> str:
+    if not isinstance(items, list):
+        return ""
+    rows: list[str] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or "").strip()
+        section = str(item.get("section") or "").strip()
+        url = str(item.get("url") or "").strip()
+        rows.append(" · ".join(value for value in (title, section, url) if value))
+    return "\n".join(value for value in rows if value)
+
+
+def _duration_seconds(value: object) -> str:
+    return f"{float(value) / 1000:.2f}" if isinstance(value, (int, float)) else ""
+
+
+@router.get("/conversations/export")
+def export_conversations(
+    date_range: Literal["today", "7d", "30d"] = "today",
+    source: str = "",
+    feedback: Literal["", "like", "dislike", "none"] = "",
+    q: str = "",
+) -> StreamingResponse:
+    """Xuất Excel lịch sử hội thoại theo đúng bộ lọc đang chọn trên giao diện."""
+    rows = _conversation_rows(
+        date_range=date_range,
+        source=source,
+        feedback=feedback,
+        query=q,
+    )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Lịch sử hội thoại"
+    headers = [
+        "STT",
+        "Mã hội thoại",
+        "Thời gian",
+        "Người dùng",
+        "Câu hỏi",
+        "Câu trả lời",
+        "Trạng thái xử lý",
+        "Lý do hỏi lại/từ chối",
+        "Nguồn truy xuất",
+        "Mã thủ tục",
+        "Tên thủ tục",
+        "Loại thông tin hỏi",
+        "Nguồn tham khảo",
+        "TTFT (giây)",
+        "Thời gian phản hồi (giây)",
+        "Đánh giá người dùng",
+        "Phản hồi người dùng",
+        "Mã trace (nếu có)",
+    ]
+    sheet.append(headers)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="B4532A")
+
+    feedback_labels = {"like": "Hữu ích", "dislike": "Không hữu ích", "none": "Chưa đánh giá"}
+    for index, row in enumerate(rows, start=1):
+        metadata = row["metadata"] if isinstance(row["metadata"], dict) else {}
+        procedure = metadata.get("procedure") if isinstance(metadata.get("procedure"), dict) else {}
+        feedback_data = (
+            metadata.get("feedback")
+            if isinstance(metadata.get("feedback"), dict)
+            else {}
         )
-    return {"items": items}
+        status = str(metadata.get("status") or "")
+        sheet.append(
+            [
+                index,
+                row["session_id"],
+                row["created_at"].strftime("%d/%m/%Y %H:%M:%S") if row["created_at"] else "",
+                row["username"] or "Khách",
+                row["question"] or "",
+                row["answer"] or "",
+                status,
+                (row["answer"] or "") if status in {"clarify", "abstained"} else "",
+                _source_label(metadata.get("source")),
+                str(procedure.get("procedure_code") or ""),
+                str(procedure.get("procedure_name") or ""),
+                "\n".join(
+                    str(item.get("section") or "").strip()
+                    for item in (metadata.get("citations") or [])
+                    if isinstance(item, dict) and str(item.get("section") or "").strip()
+                ),
+                _citations_text(metadata.get("citations")),
+                _duration_seconds(metadata.get("ttft_ms")),
+                _duration_seconds(metadata.get("total_ms")),
+                feedback_labels.get(str(feedback_data.get("value") or ""), "Chưa đánh giá"),
+                str(feedback_data.get("comment") or ""),
+                str(metadata.get("trace_id") or ""),
+            ]
+        )
+
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    widths = [8, 36, 22, 20, 42, 55, 18, 40, 18, 16, 42, 28, 55, 14, 20, 20, 35, 38]
+    for column, width in enumerate(widths, start=1):
+        sheet.column_dimensions[get_column_letter(column)].width = width
+    for row in sheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    filename = f"conversation_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/conversations/{message_id}")

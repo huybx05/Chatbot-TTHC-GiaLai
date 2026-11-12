@@ -1,10 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 
-import { deleteAdminConversation, getAdminConversations, type AdminConversation } from "../../api/admin";
+import {
+  bulkDeleteAdminConversations,
+  deleteAdminConversation,
+  downloadAdminConversations,
+  getAdminConversationIds,
+  getAdminConversations,
+  type AdminConversation,
+  type ConversationExportFilters,
+} from "../../api/admin";
 import type { BadgeTone } from "./shared.tsx";
 import { Badge, Card, Icon, PageHeader } from "./shared.tsx";
 
-type Source = "FAQ" | "Hybrid" | "Fact lookup" | "Graph" | "Không truy xuất" | "Chưa xác định";
+type Source =
+  | "FAQ"
+  | "FAQ toàn cục"
+  | "Hybrid"
+  | "Fact lookup"
+  | "Graph"
+  | "Không truy xuất"
+  | "Chưa xác định";
 type Feedback = "like" | "dislike" | "none";
 
 type ConversationLog = {
@@ -119,6 +134,7 @@ const logs: ConversationLog[] = [
 
 function sourceTone(source: Source): BadgeTone {
   if (source === "Hybrid") return "ok";
+  if (source === "FAQ toàn cục") return "ok";
   if (source === "Graph") return "warn";
   if (source === "Không truy xuất") return "muted";
   if (source === "Chưa xác định") return "muted";
@@ -148,6 +164,7 @@ function userLabel(log: ConversationLog) {
 function normalizeSource(value: string): Source {
   const labels: Record<string, Source> = {
     faq: "FAQ",
+    faq_global: "FAQ toàn cục",
     hybrid: "Hybrid",
     fact_lookup: "Fact lookup",
     graph: "Graph",
@@ -155,6 +172,7 @@ function normalizeSource(value: string): Source {
     none: "Không truy xuất",
     "": "Chưa xác định",
     FAQ: "FAQ",
+    "FAQ toàn cục": "FAQ toàn cục",
     Hybrid: "Hybrid",
     "Fact lookup": "Fact lookup",
     Graph: "Graph",
@@ -217,12 +235,59 @@ function toConversationLog(item: AdminConversation): ConversationLog {
 export default function ConversationsPage() {
   const [items, setItems] = useState<ConversationLog[]>(logs);
   const [usingMock, setUsingMock] = useState(true);
-  const [dateRange, setDateRange] = useState("today");
+  const [dateRange, setDateRange] = useState<ConversationExportFilters["dateRange"]>("today");
   const [sourceFilter, setSourceFilter] = useState("all");
-  const [feedbackFilter, setFeedbackFilter] = useState("all");
+  const [feedbackFilter, setFeedbackFilter] = useState<ConversationExportFilters["feedback"]>("all");
   const [search, setSearch] = useState("");
+  const [page, setPage] = useState(0);
+  const [pageSize] = useState(50);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(false);
   const [selectedLog, setSelectedLog] = useState<ConversationLog | null>(null);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [selectAllBusy, setSelectAllBusy] = useState(false);
   const [actionError, setActionError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [exportError, setExportError] = useState("");
+  const [isExporting, setIsExporting] = useState(false);
+
+  function toggleSelected(id: string) {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const handleSelectAll = async () => {
+    if (allFilteredSelected) {
+      setSelectedIds(new Set());
+      return;
+    }
+    if (usingMock) {
+      setSelectedIds(new Set(filteredLogs.map((log) => log.id)));
+      return;
+    }
+    setSelectAllBusy(true);
+    setActionError("");
+    try {
+      const response = await getAdminConversationIds({
+        dateRange,
+        source: sourceFilter,
+        feedback: feedbackFilter,
+        search,
+      });
+      setSelectedIds(new Set(response.ids));
+    } catch (error) {
+      setActionError(
+        error instanceof Error ? error.message : "Không lấy được danh sách để chọn tất cả.",
+      );
+    } finally {
+      setSelectAllBusy(false);
+    }
+  };
 
   const handleDelete = async (log: ConversationLog) => {
     const ok = window.confirm("Xoá câu hỏi và câu trả lời này khỏi log hội thoại?");
@@ -237,26 +302,106 @@ export default function ConversationsPage() {
       }
     }
     setItems((current) => current.filter((item) => item.id !== log.id));
+    if (!usingMock) setTotal((current) => Math.max(0, current - 1));
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      next.delete(log.id);
+      return next;
+    });
     setSelectedLog((current) => (current?.id === log.id ? null : current));
   };
 
+  const handleDeleteSelected = async () => {
+    if (selectedIds.size === 0) return;
+    if (
+      !window.confirm(
+        `Xoá ${selectedIds.size} lượt hỏi đáp đã chọn? Thao tác này không thể hoàn tác.`,
+      )
+    ) {
+      return;
+    }
+
+    setActionError("");
+    setNotice("");
+    setBulkBusy(true);
+    const ids = [...selectedIds];
+
+    if (!usingMock) {
+      try {
+        await bulkDeleteAdminConversations(ids);
+      } catch (error) {
+        setActionError(
+          error instanceof Error ? error.message : "Không xoá được các lượt đã chọn.",
+        );
+        setBulkBusy(false);
+        return;
+      }
+    }
+
+    const deletedIds = new Set(ids);
+    setItems((current) => current.filter((item) => !deletedIds.has(item.id)));
+    setTotal((current) => Math.max(0, current - ids.length));
+    setSelectedIds(new Set());
+    setSelectedLog((current) =>
+      current && deletedIds.has(current.id) ? null : current,
+    );
+    setNotice(`Đã xoá ${ids.length} lượt hỏi đáp.`);
+    setBulkBusy(false);
+  };
+
+  const handleExport = async () => {
+    if (usingMock) {
+      setExportError("Chỉ có thể xuất khi đã kết nối được dữ liệu lịch sử thực tế.");
+      return;
+    }
+    setExportError("");
+    setIsExporting(true);
+    try {
+      await downloadAdminConversations({ dateRange, source: sourceFilter, feedback: feedbackFilter, search });
+    } catch (error) {
+      setExportError(error instanceof Error ? error.message : "Không thể xuất lịch sử hội thoại.");
+    } finally {
+      setIsExporting(false);
+    }
+  };
+
   useEffect(() => {
-    let mounted = true;
-    void getAdminConversations()
-      .then((response) => {
-        if (!mounted) return;
-        setItems(response.items.map(toConversationLog));
-        setUsingMock(false);
+    setPage(0);
+  }, [dateRange, sourceFilter, feedbackFilter, search]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      void getAdminConversations({
+        offset: page * pageSize,
+        limit: pageSize,
+        dateRange,
+        source: sourceFilter,
+        feedback: feedbackFilter,
+        search,
       })
-      .catch(() => {
-        // Backend chưa sẵn sàng: giữ dữ liệu mẫu để xem giao diện.
-      });
+        .then((response) => {
+          if (cancelled) return;
+          setItems(response.items.map(toConversationLog));
+          setTotal(response.total);
+          setUsingMock(false);
+        })
+        .catch(() => {
+          // Backend chưa sẵn sàng: giữ dữ liệu mẫu để xem giao diện.
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }, search.trim() ? 250 : 0);
     return () => {
-      mounted = false;
+      cancelled = true;
+      window.clearTimeout(timer);
     };
-  }, []);
+  }, [page, pageSize, dateRange, sourceFilter, feedbackFilter, search]);
 
   const filteredLogs = useMemo(() => {
+    if (!usingMock) return items;
     const query = search.trim().toLocaleLowerCase("vi");
     return items.filter((log) => {
       let matchesDate = true;
@@ -281,7 +426,22 @@ export default function ConversationsPage() {
         );
       return matchesDate && matchesSource && matchesFeedback && matchesSearch;
     });
-  }, [items, dateRange, sourceFilter, feedbackFilter, search]);
+  }, [usingMock, items, dateRange, sourceFilter, feedbackFilter, search]);
+
+  useEffect(() => {
+    // Đổi bộ lọc thì bỏ lựa chọn cũ; đổi trang thì giữ lựa chọn
+    // để có thể chọn tất cả xuyên trang rồi xoá một lần.
+    setSelectedIds(new Set());
+    setNotice("");
+  }, [dateRange, sourceFilter, feedbackFilter, search]);
+
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  useEffect(() => {
+    if (page > totalPages - 1) setPage(totalPages - 1);
+  }, [page, totalPages]);
+  const allFilteredSelected = usingMock
+    ? filteredLogs.length > 0 && filteredLogs.every((log) => selectedIds.has(log.id))
+    : total > 0 && selectedIds.size >= total;
 
   const todayQuestions = items.filter((log) => log.dateGroup === "today").length;
   const positiveFeedback = items.filter((log) => log.feedback === "like").length;
@@ -305,7 +465,7 @@ export default function ConversationsPage() {
 
   const summaryCards: { label: string; value: number | string; caption?: string }[] = [
     { label: "Câu hỏi hôm nay", value: todayQuestions },
-    { label: "Lượt hỏi đáp", value: items.length },
+    { label: "Lượt hỏi đáp", value: usingMock ? items.length : total },
     { label: "Đánh giá hữu ích", value: positiveFeedback },
     { label: "Đánh giá Không hữu ích", value: negativeFeedback },
     { label: "Thời gian trung bình hiển thị token đầu tiên (TTFT)", value: averageTtft, caption: "*TTFT: Time to first token" },
@@ -351,7 +511,9 @@ export default function ConversationsPage() {
               <select
                 className="h-9 rounded-lg border border-border-color bg-card-surface px-3 text-sm font-normal text-text-primary"
                 value={dateRange}
-                onChange={(event) => setDateRange(event.target.value)}
+                onChange={(event) =>
+                  setDateRange(event.target.value as ConversationExportFilters["dateRange"])
+                }
               >
                 <option value="today">Hôm nay</option>
                 <option value="7d">7 ngày qua</option>
@@ -368,6 +530,7 @@ export default function ConversationsPage() {
               >
                 <option value="all">Tất cả nguồn</option>
                 <option value="FAQ">FAQ</option>
+                <option value="FAQ toàn cục">FAQ toàn cục</option>
                 <option value="Hybrid">Hybrid</option>
                 <option value="Fact lookup">Fact lookup</option>
                 <option value="Graph">Graph</option>
@@ -380,7 +543,9 @@ export default function ConversationsPage() {
               <select
                 className="h-9 rounded-lg border border-border-color bg-card-surface px-3 text-sm font-normal text-text-primary"
                 value={feedbackFilter}
-                onChange={(event) => setFeedbackFilter(event.target.value)}
+                onChange={(event) =>
+                  setFeedbackFilter(event.target.value as ConversationExportFilters["feedback"])
+                }
               >
                 <option value="all">Tất cả đánh giá</option>
                 <option value="like">Hữu ích</option>
@@ -399,20 +564,70 @@ export default function ConversationsPage() {
                 className="h-9 w-full rounded-lg border border-border-color bg-card-surface px-3 text-sm font-normal text-text-primary outline-none focus:border-primary focus:ring-2 focus:ring-primary-soft"
               />
             </label>
+
+            <button
+              type="button"
+              onClick={() => void handleExport()}
+              disabled={isExporting}
+              className="inline-flex h-9 items-center justify-center gap-2 rounded-lg border border-border-color bg-card-surface px-4 text-sm font-bold text-text-primary transition hover:bg-page-bg disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <Icon name="download" className="text-[18px]" />
+              {isExporting ? "Đang xuất..." : "Xuất Excel"}
+            </button>
           </div>
 
-          <div className="flex items-center justify-between gap-3 border-t border-border-color pt-3">
-            <p className="text-sm text-text-secondary">{filteredLogs.length} lượt hỏi đáp</p>
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-border-color pt-3">
+            <div>
+              <p className="text-sm text-text-secondary">{filteredLogs.length} lượt hỏi đáp</p>
+            </div>
+            {selectedIds.size > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-bold text-primary">
+                  Đã chọn {selectedIds.size}
+                </span>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => void handleDeleteSelected()}
+                  className="rounded-md border border-danger px-2 py-1 text-xs font-bold text-danger hover:bg-danger-surface disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {bulkBusy ? "Đang xoá..." : "Xoá đã chọn"}
+                </button>
+                <button
+                  type="button"
+                  disabled={bulkBusy}
+                  onClick={() => setSelectedIds(new Set())}
+                  className="text-xs font-semibold text-text-secondary underline disabled:opacity-60"
+                >
+                  Bỏ chọn
+                </button>
+              </div>
+            ) : null}
           </div>
 
           {actionError ? (
             <p className="text-sm font-semibold text-danger">{actionError}</p>
           ) : null}
+          {notice ? <p className="text-sm font-semibold text-green-700">{notice}</p> : null}
+          {exportError ? <p className="text-sm font-semibold text-danger">{exportError}</p> : null}
 
           <div className="overflow-x-auto rounded-lg border border-border-color">
             <table className="w-full min-w-[1000px] text-center text-sm">
               <thead className="border-b border-border-color bg-secondary-surface text-xs uppercase text-text-secondary">
                 <tr>
+                  <th className="whitespace-nowrap px-4 py-3 text-left font-semibold">
+                    <label className="inline-flex items-center gap-2 normal-case">
+                      <input
+                        type="checkbox"
+                        checked={allFilteredSelected}
+                        disabled={selectAllBusy || (usingMock ? filteredLogs.length === 0 : total === 0)}
+                        onChange={() => void handleSelectAll()}
+                        aria-label="Chọn tất cả lượt hỏi đáp theo bộ lọc hiện tại"
+                        className="h-4 w-4 accent-primary disabled:opacity-50"
+                      />
+                      {selectAllBusy ? "Đang chọn..." : "Chọn tất cả"}
+                    </label>
+                  </th>
                   <th className="px-4 py-3 text-left font-semibold">Thời gian</th>
                   <th className="px-4 py-3 text-left font-semibold">Người dùng</th>
                   <th className="min-w-[300px] py-3 pl-16 pr-4 text-left font-semibold">Nội dung hỏi đáp</th>
@@ -439,6 +654,17 @@ export default function ConversationsPage() {
                     }}
                     className="cursor-pointer border-b border-border-color outline-none last:border-0 hover:bg-hover-item focus-visible:bg-primary-soft"
                   >
+                    <td className="px-4 py-3 text-left align-middle">
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(log.id)}
+                        onClick={(event) => event.stopPropagation()}
+                        onKeyDown={(event) => event.stopPropagation()}
+                        onChange={() => toggleSelected(log.id)}
+                        aria-label={`Chọn lượt hỏi đáp: ${log.question}`}
+                        className="h-4 w-4 accent-primary"
+                      />
+                    </td>
                     <td className="whitespace-nowrap px-4 py-3 text-left align-middle text-text-secondary">
                       {log.dateLabel ?? (log.dateGroup === "today" ? "Hôm nay" : "Hôm qua")}
                       <br />
@@ -485,6 +711,32 @@ export default function ConversationsPage() {
               </tbody>
             </table>
           </div>
+
+          {!usingMock ? (
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-text-secondary">
+                Tổng {total} lượt · Trang {page + 1}/{totalPages}
+              </p>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={page === 0 || loading}
+                  onClick={() => setPage((current) => Math.max(0, current - 1))}
+                  className="rounded-md border border-border-color px-3 py-1.5 text-xs font-bold text-text-primary hover:bg-secondary-surface disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Trang trước
+                </button>
+                <button
+                  type="button"
+                  disabled={page + 1 >= totalPages || loading}
+                  onClick={() => setPage((current) => current + 1)}
+                  className="rounded-md border border-border-color px-3 py-1.5 text-xs font-bold text-text-primary hover:bg-secondary-surface disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  Trang sau
+                </button>
+              </div>
+            </div>
+          ) : null}
 
           {filteredLogs.length === 0 ? (
             <p className="py-6 text-center text-sm text-text-secondary">

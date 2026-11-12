@@ -11,6 +11,8 @@ export function askChat(payload: ChatRequest): Promise<ChatResponse> {
 /** Kết quả của một lượt stream — đủ để dựng lại đúng khung chat như đường không stream. */
 export interface StreamKetQua {
   answer: string;
+  /** ID message do sự kiện `done` trả về, dùng cho like/dislike. */
+  messageId?: string;
   meta: {
     status: "answered" | "clarify" | "abstained";
     procedure: { procedure_code: string; procedure_name: string } | null;
@@ -96,6 +98,9 @@ export async function askChatStream(
       // `done` là bản chốt: nếu nội dung lệch với những gì đã nhận, tin bản chốt.
       ket_qua.answer = String(da_doc.answer ?? ket_qua.answer);
       ket_qua.streamed = Boolean(da_doc.streamed);
+      if (typeof da_doc.message_id === "string") {
+        ket_qua.messageId = da_doc.message_id;
+      }
     } else if (ten === "error") {
       throw new Error(String(da_doc.message ?? "Luồng trả lời bị đứt."));
     }

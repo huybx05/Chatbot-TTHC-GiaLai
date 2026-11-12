@@ -21,7 +21,13 @@ from backend.app.db.postgres import engine
 from backend.app.memory.reader import load_session_memory
 from backend.app.memory.repository import update_preferred_name
 from backend.app.memory.summarizer import maybe_summarize
-from backend.app.memory.types import MemoryTurn, SessionMemory
+from backend.app.memory.types import (
+    MemoryTurn,
+    ProcedureAnchor,
+    SessionMemory,
+    TopicRef,
+)
+from backend.app.rag.grounding import CODE_PATTERN
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +50,8 @@ def memory_from_history(
 ) -> SessionMemory:
     """Dựng memory tạm cho guest từ history client; không có topic ledger."""
     turns: list[MemoryTurn] = []
+    inferred_codes: list[str] = []
+    provided_codes: list[str] = []
     for index, item in enumerate(list(history)[-settings.memory_recent_messages :]):
         role = str(item.get("role") or "")
         if role not in {"user", "assistant"}:
@@ -51,6 +59,14 @@ def memory_from_history(
         content = str(item.get("content") or "").strip()
         if not content:
             continue
+        provided_code = str(item.get("procedure_code") or "").strip()
+        if provided_code and provided_code not in provided_codes:
+            provided_codes.append(provided_code)
+        if role == "assistant":
+            for match in CODE_PATTERN.findall(content):
+                code = match.replace(",", ".")
+                if code not in inferred_codes:
+                    inferred_codes.append(code)
         turns.append(
             MemoryTurn(
                 id=f"history-{index}",
@@ -63,12 +79,30 @@ def memory_from_history(
             )
         )
 
+    # Client biết mã của lượt trước thì mã đó là nguồn tin cậy hơn mã suy ra từ
+    # nội dung câu trả lời (câu trả lời có thể nhắc nhiều thủ tục).
+    codes = provided_codes or inferred_codes
+    topics = [
+        TopicRef(
+            order=index + 1,
+            procedure_code=code,
+            procedure_name=code,
+            first_message_id="",
+            last_message_id="",
+        )
+        for index, code in enumerate(codes)
+    ]
+    active = (
+        ProcedureAnchor(code=codes[-1], name=codes[-1])
+        if codes
+        else None
+    )
     return SessionMemory(
         summary="",
         summary_through_message_id=None,
         recent_turns=turns,
-        topics=[],
-        active_procedure=None,
+        topics=topics,
+        active_procedure=active,
         last_clarify_options=[],
         last_outcome="",
         total_chars=sum(len(turn.content) for turn in turns),

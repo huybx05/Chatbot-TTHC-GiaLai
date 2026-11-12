@@ -1,4 +1,5 @@
 import { request } from "./http";
+import { API_BASE_URL } from "./config";
 
 export type AdminProcedure = {
   code: string;
@@ -95,8 +96,101 @@ export type AdminConversation = {
   } | null;
 };
 
-export function getAdminConversations() {
-  return request<{ items: AdminConversation[] }>("/api/admin/conversations");
+export type AdminConversationPage = {
+  items: AdminConversation[];
+  total: number;
+  limit: number;
+  offset: number;
+};
+
+export type AdminConversationQuery = {
+  offset?: number;
+  limit?: number;
+  dateRange?: "today" | "7d" | "30d";
+  source?: string;
+  feedback?: "all" | "like" | "dislike" | "none";
+  search?: string;
+};
+
+export function getAdminConversations(query: AdminConversationQuery = {}) {
+  const suffix = conversationParams(query);
+  return request<AdminConversationPage>(
+    `/api/admin/conversations${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+function conversationParams(query: AdminConversationQuery): string {
+  const params = new URLSearchParams();
+  const sourceValues: Record<string, string> = {
+    FAQ: "faq",
+    "FAQ toàn cục": "faq_global",
+    Hybrid: "hybrid",
+    "Fact lookup": "fact_lookup",
+    Graph: "graph",
+    "Không truy xuất": "none",
+  };
+  if (typeof query.offset === "number") params.set("offset", String(query.offset));
+  if (typeof query.limit === "number") params.set("limit", String(query.limit));
+  if (query.dateRange) params.set("date_range", query.dateRange);
+  if (query.source && query.source !== "all") {
+    params.set("source", sourceValues[query.source] ?? query.source);
+  }
+  if (query.feedback && query.feedback !== "all") {
+    params.set("feedback", query.feedback);
+  }
+  if (query.search?.trim()) params.set("q", query.search.trim());
+  return params.toString();
+}
+
+export function getAdminConversationIds(query: AdminConversationQuery = {}) {
+  const suffix = conversationParams(query);
+  return request<{ ids: string[]; total: number }>(
+    `/api/admin/conversations/ids${suffix ? `?${suffix}` : ""}`,
+  );
+}
+
+export function bulkDeleteAdminConversations(ids: string[]) {
+  return request<{ deleted: number }>("/api/admin/conversations/bulk-delete", {
+    method: "POST",
+    body: { ids },
+  });
+}
+
+export type ConversationExportFilters = {
+  dateRange: "today" | "7d" | "30d";
+  source: string;
+  feedback: "all" | "like" | "dislike" | "none";
+  search: string;
+};
+
+export async function downloadAdminConversations(filters: ConversationExportFilters) {
+  const params = new URLSearchParams({ date_range: filters.dateRange });
+  const sourceValues: Record<string, string> = {
+    FAQ: "faq",
+    "FAQ toàn cục": "faq_global",
+    Hybrid: "hybrid",
+    "Fact lookup": "fact_lookup",
+    Graph: "graph",
+    "Không truy xuất": "none",
+  };
+  if (filters.source !== "all") params.set("source", sourceValues[filters.source] ?? filters.source);
+  if (filters.feedback !== "all") params.set("feedback", filters.feedback);
+  if (filters.search.trim()) params.set("q", filters.search.trim());
+
+  const response = await fetch(`${API_BASE_URL}/api/admin/conversations/export?${params}`, {
+    credentials: "include",
+  });
+  if (!response.ok) throw new Error("Không thể xuất lịch sử hội thoại.");
+
+  const file = await response.blob();
+  const url = URL.createObjectURL(file);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "conversation_logs.xlsx";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
 }
 
 export type AdminConversationDetail = AdminConversation & {
@@ -237,6 +331,114 @@ export function deleteAdminFaq(id: string) {
   return request<{ deleted: number }>(`/api/admin/faq/${id}`, {
     method: "DELETE",
   });
+}
+
+export function bulkDeleteAdminFaqs(ids: string[]) {
+  return request<{ deleted: number }>("/api/admin/faq/bulk/delete", {
+    method: "POST",
+    body: { ids },
+  });
+}
+
+export function bulkSetAdminFaqStatus(
+  ids: string[],
+  status: "ready" | "draft",
+) {
+  return request<{ updated: number }>("/api/admin/faq/bulk/status", {
+    method: "POST",
+    body: { ids, status },
+  });
+}
+
+export type FaqImportIssue = {
+  row: number;
+  column: string;
+  message: string;
+};
+
+async function readImportError(response: Response): Promise<string> {
+  try {
+    const payload = (await response.json()) as {
+      detail?: string | { message?: string; errors?: FaqImportIssue[] };
+    };
+    if (typeof payload.detail === "string") return payload.detail;
+    if (payload.detail && typeof payload.detail === "object") {
+      const errors = payload.detail.errors ?? [];
+      const first = errors
+        .slice(0, 5)
+        .map((item) => `Dòng ${item.row} · ${item.column}: ${item.message}`)
+        .join("\n");
+      return [payload.detail.message, first].filter(Boolean).join("\n");
+    }
+  } catch {
+    // body không phải JSON
+  }
+  return "Không import được file FAQ.";
+}
+
+export async function importAdminFaqs(file: File): Promise<{ imported: number }> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await fetch(`${API_BASE_URL}/api/admin/faq/import`, {
+    method: "POST",
+    credentials: "include",
+    body: form,
+  });
+  if (!response.ok) {
+    throw new Error(await readImportError(response));
+  }
+  return (await response.json()) as { imported: number };
+}
+
+async function downloadFaqFile(
+  path: string,
+  filename: string,
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "GET",
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new Error("Không tải được file FAQ.");
+  }
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+}
+
+export function downloadAdminFaqExport(status: "all" | "ready" | "draft", procedureCode = "") {
+  const params = new URLSearchParams({ status });
+  if (procedureCode.trim()) params.set("procedure_code", procedureCode.trim());
+  return downloadFaqFile(
+    `/api/admin/faq/export?${params.toString()}`,
+    `faq_${status}_${procedureCode.trim() || "all"}.xlsx`,
+  );
+}
+
+export function downloadAdminFaqTemplate() {
+  return downloadFaqFile("/api/admin/faq/template", "faq_template.xlsx");
+}
+
+export function downloadAdminProcedureExport(options: {
+  q?: string;
+  sourceFields?: string[];
+}) {
+  const params = new URLSearchParams();
+  if (options.q?.trim()) params.set("q", options.q.trim());
+  for (const field of options.sourceFields ?? []) {
+    if (field.trim()) params.append("source_field", field);
+  }
+  const query = params.toString();
+  return downloadFaqFile(
+    `/api/admin/procedures/export${query ? `?${query}` : ""}`,
+    "danh_sach_tthc.xlsx",
+  );
 }
 
 export function getGraphStats() {

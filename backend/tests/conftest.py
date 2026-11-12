@@ -25,6 +25,8 @@ os.environ.setdefault("LOGIN_RATE_LIMIT_PER_MIN", "0")
 os.environ.setdefault("REGISTER_RATE_LIMIT_PER_MIN", "0")
 os.environ.setdefault("REFRESH_RATE_LIMIT_PER_MIN", "0")
 os.environ.setdefault("CHAT_RATE_LIMIT_PER_MIN", "0")
+# Không gọi API embedding thật cho auto-match FAQ toàn cục trong test.
+os.environ.setdefault("FAQ_GLOBAL_SEMANTIC_ENABLED", "0")
 
 from backend.app.auth.dependencies import require_admin  # noqa: E402
 from backend.app.main import app  # noqa: E402

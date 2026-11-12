@@ -31,7 +31,13 @@ from backend.app.rag import (
     resolve,
     sections,
 )
-from backend.app.rag.evidence import from_chunks, from_fact, from_graph, from_sections
+from backend.app.rag.evidence import (
+    deduplicate_evidence,
+    from_chunks,
+    from_fact,
+    from_graph,
+    from_sections,
+)
 from backend.app.workflow.case_resolver import filter_items, select_case
 from backend.app.workflow.planner import (
     REASON_AMBIGUOUS_SUBJECT,
@@ -202,14 +208,24 @@ async def _constraint_entity(
     return None, "không xác định được giá trị của điều kiện lọc"
 
 
-async def _run_section(task: Task, question: str) -> ToolResult:
+async def _run_section(
+    task: Task, question: str, *, case_question: str = ""
+) -> ToolResult:
     rows, error = await sections.theo_khia_canh_checked(
         list(task.procedure_codes), [task.facet]
     )
     if error:
         return ToolResult([], status=STATUS_FAILED, error=error)
-    if task.facet == "required_documents":
-        rows = filter_items(rows, select_case(question, rows))
+    if task.facet in {"required_documents", "notes"}:
+        # Chọn case theo câu người dùng gốc, không theo câu rewrite đã chèn tên
+        # thủ tục — tên thủ tục trong heading không phải tín hiệu chọn case.
+        case = select_case(case_question or question, rows)
+        if task.facet == "notes":
+            # "Lưu ý" là một case riêng; không có case đó thì trả rỗng,
+            # tuyệt đối không trả toàn bộ giấy tờ.
+            rows = filter_items(rows, case) if case is not None else []
+        else:
+            rows = filter_items(rows, case)
     return ToolResult(from_sections(rows))
 
 
@@ -244,6 +260,11 @@ async def _run_graph(
             label=task.subject_key,
         )
     document_subject = task.subject_kind in {"decision", "vocabulary"}
+    component_code = (
+        task.procedure_codes[0]
+        if task.intent == "PROCEDURES_BY_COMPONENT" and task.procedure_codes
+        else None
+    )
     evidence = await graph_query.answer(
         question,
         codes=list(task.procedure_codes) or None,
@@ -254,6 +275,7 @@ async def _run_graph(
         entity=entity,
         expected_types=task.expected_types,
         intent=task.intent or None,
+        component_code=component_code,
     )
     if getattr(evidence, "failed", False):
         return ToolResult([], status=STATUS_FAILED, error=evidence.note)
@@ -303,8 +325,11 @@ async def _run_once(
     vector_source: _VectorSource,
     *,
     keyword_question: str | None = None,
+    case_question: str = "",
 ) -> ToolResult:
     if task.tool == TOOL_SECTION:
+        if case_question:
+            return await _run_section(task, question, case_question=case_question)
         return await _run_section(task, question)
     if task.tool == TOOL_FACT:
         return await _run_fact(task)
@@ -339,6 +364,7 @@ async def _execute_task(
     vector_source: _VectorSource,
     *,
     keyword_question: str | None = None,
+    case_question: str = "",
 ) -> tuple[list[dict[str, Any]], RequestCoverage]:
     clarify: dict[str, Any] | None = None
     try:
@@ -348,6 +374,7 @@ async def _execute_task(
                 question,
                 vector_source,
                 keyword_question=keyword_question,
+                case_question=case_question,
             ),
             timeout=TASK_TIMEOUT_S,
         )
@@ -396,6 +423,7 @@ async def _execute_task(
                         question,
                         vector_source,
                         keyword_question=keyword_question,
+                        case_question=case_question,
                     ),
                     timeout=TASK_TIMEOUT_S,
                 )
@@ -428,10 +456,21 @@ async def execute_plan(state: AgentState, plan: Plan) -> Execution:
     """Run every task (parallel), then attach coverage for unsupported requests."""
     started = time.perf_counter()
     question = str(state.get("question") or "")
+    # Dùng câu gốc cho bộ chọn case: câu rewrite có thêm tên thủ tục, và tên
+    # thủ tục không được biến thành tín hiệu chọn case.
+    case_question = str(state.get("original_question") or "")
     vector_source = _VectorSource(state)
 
     results = await asyncio.gather(
-        *(_execute_task(task, question, vector_source) for task in plan.tasks)
+        *(
+            _execute_task(
+                task,
+                question,
+                vector_source,
+                case_question=case_question,
+            )
+            for task in plan.tasks
+        )
     )
 
     execution = Execution()
@@ -454,6 +493,10 @@ async def execute_plan(state: AgentState, plan: Plan) -> Execution:
                 note=str(item.get("reason") or ""),
             )
         )
+
+    # Nhiều nhánh có thể trả cùng một dòng (graph + section, hoặc hai lần fallback).
+    # Hợp nhất trước khi sắp thứ tự để phần sinh câu trả lời không nhận bằng chứng trùng.
+    execution.evidence = deduplicate_evidence(execution.evidence)
 
     # Keep evidence in the order the user asked, even though tasks ran in parallel.
     execution.evidence.sort(key=lambda item: int(item.get("request_index") or 0))

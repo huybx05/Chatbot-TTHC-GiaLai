@@ -69,6 +69,9 @@ GRAPH_FACETS = frozenset(
         Facet.STATUS.value,
         Facet.TARGET_AUDIENCE.value,
         Facet.RELATED_PROCEDURES.value,
+        Facet.COMPONENTS.value,
+        Facet.PARENT_INTERLINKED.value,
+        Facet.PROCEDURE_RELATIONS.value,
     }
 )
 
@@ -99,7 +102,8 @@ operation chỉ được là: get, guide, list, count, compare, rank, check.
 facet chỉ được là: required_documents, steps, submission_method, receiving_agency, processing_time,
 fee, result, result_delivery, decision_number, legal_basis, requirements, general_info,
 issuing_agency, implementing_agency, coordinating_agency, authorized_agency, administrative_level,
-field, domain_group, status, target_audience, related_procedures, unknown.
+field, domain_group, status, target_audience, related_procedures, components,
+parent_interlinked, procedure_relations, notes, unknown.
 constraint.type chỉ được là: agency, field, administrative_level, domain_group,
 target_audience, status, location, time, unknown.
 
@@ -135,6 +139,26 @@ Quy tắc:
 - "Thủ tục ..." hoặc mã thủ tục là subject type=procedure.
 - Câu hỏi "Quyết định ... áp dụng cho thủ tục nào" dùng facet=related_procedures,
   operation=list; không dùng general_info.
+- Nếu người dùng hỏi một thủ tục gồm những thủ tục con/thành phần nào, hoặc thủ tục đó
+  được cấu thành từ các thủ tục nào, dùng facet=components, operation=list/get.
+- Nếu người dùng hỏi một thủ tục là thành phần của thủ tục cha nào, hoặc thuộc thủ tục
+  liên thông nào ở vai trò thủ tục con, dùng facet=parent_interlinked, operation=list/get.
+- Nếu người dùng hỏi riêng phần "Lưu ý" của thủ tục, dùng facet=notes,
+  operation=get; không dùng general_info.
+- Nếu người dùng hỏi chung "hồ sơ gồm những gì", dùng
+  facet=required_documents, operation=get; phải giữ đủ các trường hợp
+  Giấy tờ phải nộp, Giấy tờ phải xuất trình và Lưu ý nếu dữ liệu có.
+- related_procedures chỉ dùng cho quan hệ thủ tục liên quan thông thường; không dùng cho
+  quan hệ cha-con/thành phần.
+- Khi người dùng nói chung "liên quan", "liên thông", "quan hệ với thủ tục khác" mà không
+  phân biệt cha/con, dùng facet=procedure_relations, operation=list. Hệ thống sẽ tự trả
+  quan hệ thực có trong dữ liệu; không bắt người dùng biết thuật ngữ.
+- Chỉ dùng components/parent_interlinked khi người dùng nói rõ "gồm những thủ tục con",
+  "thành phần", "thuộc thủ tục cha nào".
+- Ví dụ định hướng (không phải danh sách từ khóa cứng):
+  "Thủ tục này gồm những thủ tục con nào?" → facet=components, operation=list.
+  "Thủ tục này là thành phần của thủ tục nào?" → facet=parent_interlinked, operation=list.
+  "Thủ tục này liên quan/liên thông với thủ tục nào?" → facet=procedure_relations, operation=list.
 - Câu hỏi tư vấn quyền/nghĩa vụ pháp lý trong một tình huống cá nhân (ví dụ hỏi một giao dịch
   có được phép hay không), nhưng không hỏi cách thực hiện một thủ tục hành chính, là scope
   out_of_scope. Không biến câu này thành yêu cầu hồ sơ hoặc điều kiện của một thủ tục gần nghĩa.

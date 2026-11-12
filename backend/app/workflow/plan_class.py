@@ -51,10 +51,11 @@ UNSUPPORTED_OPERATIONS = frozenset(
     {RequestOperation.RANK.value}
 )
 #: Facet chưa có primitive tương ứng.
-UNSUPPORTED_FACETS = frozenset({Facet.RELATED_PROCEDURES.value, Facet.UNKNOWN.value})
+UNSUPPORTED_FACETS = frozenset({Facet.UNKNOWN.value})
 CONTENT_FACETS = frozenset(
     {
         Facet.REQUIRED_DOCUMENTS.value,
+        Facet.NOTES.value,
         Facet.STEPS.value,
         Facet.SUBMISSION_METHOD.value,
         Facet.PROCESSING_TIME.value,

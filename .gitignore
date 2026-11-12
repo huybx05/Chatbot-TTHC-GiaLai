@@ -53,7 +53,7 @@ frontend/logo.jpg
 frontend/public/logo.jpg
 
 # Notebooks
-notebooks/.ipynb_checkpoints/
+notebooks/*
 
 #SKILLS
 SKILLS/*
@@ -96,9 +96,22 @@ short-term memory du an truoc.md
 !docs/deployment_vps_cloudflare.md
 
 # SeaweedFS credentials
-seaweedfs/s3.json
+seaweedfs/*
 
 # Local database dumps/backups
 backups/
 *.dump
 
+BCTN/*
+
+evaluation/*
+
+diagram/*
+
+graphify-out/*
+
+/diagram-2026-10-24.drawio
+
+/Evaluation_dev_xlsx
+
+/PROJECT_GUIDE_V4_1.md

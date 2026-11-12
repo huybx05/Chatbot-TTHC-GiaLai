@@ -161,8 +161,11 @@ CREATE INDEX IF NOT EXISTS idx_faq_intent
 CREATE INDEX IF NOT EXISTS idx_faq_domain_source
     ON faq(domain_group, source_field);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_faq_proc_question
-    ON faq(procedure_code, lower(question));
+CREATE UNIQUE INDEX IF NOT EXISTS uq_faq_proc_question_norm
+    ON faq (
+        COALESCE(procedure_code, ''),
+        lower(regexp_replace(btrim(question), '\s+', ' ', 'g'))
+    );
 
 -- Hàm dùng chung phải được định nghĩa **trước trigger đầu tiên** dùng nó.
 -- Trước đây hàm nằm ở cuối file nên `schema.sql` chạy trên database mới sẽ

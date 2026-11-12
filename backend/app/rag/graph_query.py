@@ -588,6 +588,34 @@ INTENTS: tuple[IntentSpec, ...] = (
         empty="Chưa ghi nhận thông tin cơ quan cho thủ tục này.",
     ),
     IntentSpec(
+        intent="COMPONENTS_OF_PROCEDURE",
+        title="Các thủ tục thành phần của thủ tục liên thông",
+        template="COMPONENTS_OF_PROCEDURE",
+        any_of=(
+            "thanh phan",
+            "gom",
+            "bao gom",
+            "cac thu tuc con",
+            "lien thong voi",
+            "thu tuc lien thong",
+        ),
+        needs=("code",),
+        empty="Thủ tục này chưa ghi nhận thành phần liên thông.",
+    ),
+    IntentSpec(
+        intent="PROCEDURE_RELATIONS",
+        title="Quan hệ thủ tục",
+        template="PROCEDURE_RELATIONS",
+        any_of=(
+            "lien quan",
+            "lien thong",
+            "thanh phan",
+            "thuoc thu tuc",
+        ),
+        needs=("code",),
+        empty="Chưa ghi nhận quan hệ thủ tục nào cho thủ tục này.",
+    ),
+    IntentSpec(
         intent="CLASSIFY",
         title="Phân loại thủ tục",
         template="CLASSIFY",
@@ -707,6 +735,19 @@ INTENTS: tuple[IntentSpec, ...] = (
         template="PROCEDURES_BY_DECISION",
         needs=("document",),
         empty="Chưa ghi nhận thủ tục nào thuộc quyết định này.",
+    ),
+    IntentSpec(
+        intent="PROCEDURES_BY_COMPONENT",
+        title="Thủ tục cha của một thành phần",
+        template="PROCEDURES_BY_COMPONENT",
+        any_of=(
+            "thuoc thu tuc nao",
+            "thanh phan cua",
+            "cha cua",
+            "thuoc lien thong nao",
+        ),
+        needs=("component_code",),
+        empty="Chưa ghi nhận thủ tục cha cho thành phần này.",
     ),
 )
 
@@ -974,6 +1015,10 @@ def _specs_for_facets(
             "domain_group": "CLASSIFY",
             "status": "CLASSIFY",
             "target_audience": "AUDIENCE",
+            "components": "COMPONENTS_OF_PROCEDURE",
+            "parent_interlinked": "PROCEDURES_BY_COMPONENT",
+            "procedure_relations": "PROCEDURE_RELATIONS",
+            "related_procedures": "PROCEDURE_RELATIONS",
         }
         intents.extend(mapping[facet] for facet in facets if facet in mapping)
     elif entity is not None:
@@ -1288,6 +1333,14 @@ COLUMNS: dict[str, tuple[tuple[str, str, bool], ...]] = {
         # thành nhiều cơ quan giả (ví dụ "Ủy ban Nhân dân xã, phường, thị trấn").
         ("gia_tri", "Cơ quan", False),
     ),
+    "COMPONENTS_OF_PROCEDURE": (
+        ("ma_thanh_phan", "Mã thành phần", False),
+        ("ten_thanh_phan", "Tên thủ tục thành phần", False),
+        ("ten_goi", "Tên trong quan hệ", False),
+        ("source_code", "Mã nguồn của quan hệ", False),
+        ("source_url", "Nguồn quan hệ", False),
+        ("detail_url", "Đường dẫn chi tiết", False),
+    ),
     "CLASSIFY": (
         ("loai", "Loại thông tin", False),
         ("gia_tri", "Giá trị", False),
@@ -1316,6 +1369,23 @@ COLUMNS: dict[str, tuple[tuple[str, str, bool], ...]] = {
     "PROCEDURES_BY_DECISION": (
         ("ma_thu_tuc", "Mã thủ tục", False),
         ("ten", "Tên thủ tục", False),
+        ("detail_url", "Đường dẫn chi tiết", False),
+    ),
+    "PROCEDURES_BY_COMPONENT": (
+        ("ma_thu_tuc", "Mã thủ tục cha", False),
+        ("ten", "Tên thủ tục cha", False),
+        ("ten_goi", "Tên thành phần trong quan hệ", False),
+        ("source_code", "Mã nguồn của quan hệ", False),
+        ("source_url", "Nguồn quan hệ", False),
+        ("detail_url", "Đường dẫn chi tiết", False),
+    ),
+    "PROCEDURE_RELATIONS": (
+        ("vai_tro", "Vai trò", False),
+        ("ma", "Mã thủ tục", False),
+        ("ten", "Tên thủ tục", False),
+        ("ten_goi", "Tên trong quan hệ", False),
+        ("source_code", "Mã nguồn của quan hệ", False),
+        ("source_url", "Nguồn quan hệ", False),
         ("detail_url", "Đường dẫn chi tiết", False),
     ),
     "PROCEDURES_BY_AGENCY": (
@@ -1512,6 +1582,7 @@ def build_plan(
     doc_key: str | None,
     limit: int,
     entity: EntityMatch | None = None,
+    component_code: str | None = None,
 ) -> GraphQueryPlan | None:
     """Gắn tham số vào template. Trả ``None`` nếu thiếu tham số bắt buộc.
 
@@ -1533,6 +1604,10 @@ def build_plan(
         if not doc_key:
             return None
         params["doc_key"] = doc_key
+    if "component_code" in spec.needs:
+        if not component_code:
+            return None
+        params["component_code"] = component_code
 
     # Tham số lấy từ thực thể đóng đã khớp trong RAM.
     tham_so_thuc_the = {
@@ -1780,6 +1855,7 @@ async def _answer(
     requested_facets: list[str] | None = None,
     entity: EntityMatch | None = None,
     intent: str | None = None,
+    component_code: str | None = None,
 ) -> GraphEvidence:
     """Trả lời một câu hỏi graph. **Không bao giờ ném lỗi** — hỏng thì trả ``note``."""
     bat_dau = time.perf_counter()
@@ -2098,7 +2174,14 @@ async def _answer(
         phan: list[GraphPart] = []
         chu_the = ""
         for mot_spec in specs:
-            mot_plan = build_plan(mot_spec, code=ma, doc_key=doc_key, limit=limit, entity=thuc_the)
+            mot_plan = build_plan(
+                mot_spec,
+                code=ma,
+                doc_key=doc_key,
+                limit=limit,
+                entity=thuc_the,
+                component_code=component_code,
+            )
             if mot_plan is None:
                 continue
             try:
@@ -2139,7 +2222,14 @@ async def _answer(
                 )
             )
 
-    plan = build_plan(spec, code=ma, doc_key=doc_key, limit=limit, entity=thuc_the)
+    plan = build_plan(
+        spec,
+        code=ma,
+        doc_key=doc_key,
+        limit=limit,
+        entity=thuc_the,
+        component_code=component_code,
+    )
     if plan is None:
         return xong(
             GraphEvidence(
@@ -2172,7 +2262,12 @@ async def _answer(
         spec_du_phong = next((s for s in INTENTS if s.template == du_phong), None)
         if spec_du_phong is not None:
             plan_du_phong = build_plan(
-                spec_du_phong, code=ma, doc_key=doc_key, limit=limit, entity=thuc_the
+                spec_du_phong,
+                code=ma,
+                doc_key=doc_key,
+                limit=limit,
+                entity=thuc_the,
+                component_code=component_code,
             )
             if plan_du_phong is not None:
                 try:
@@ -2199,6 +2294,13 @@ async def _answer(
     # ⑤ chủ thể hiển thị: tên thủ tục nếu có, không thì số hiệu văn bản
     if not subject and doc_key:
         subject = van_ban.unique.name if van_ban.unique else doc_key
+    if not subject and ma:
+        # Template quan hệ chỉ trả các thủ tục liên quan; neo cần tên của
+        # thủ tục gốc để câu trả lời không nhầm mã gốc là "không có dữ liệu".
+        try:
+            subject = (await resolver.procedure_names()).get(ma, "")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Không lấy được tên thủ tục %s: %s", ma, exc)
     if (
         subject
         and ma
@@ -2299,6 +2401,7 @@ async def answer(
     entity: EntityMatch | None = None,
     expected_types: tuple[str, ...] | list[str] | None = None,
     intent: str | None = None,
+    component_code: str | None = None,
 ) -> GraphEvidence:
     """Điểm vào của Graph: chạy template rồi lọc đúng loại mà planner yêu cầu."""
     evidence = await _answer(
@@ -2311,6 +2414,7 @@ async def answer(
         requested_facets=requested_facets,
         entity=entity,
         intent=intent,
+        component_code=component_code,
     )
     return loc_theo_loai(evidence, expected_types)
 

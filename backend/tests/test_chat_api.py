@@ -522,7 +522,11 @@ def test_sse_cau_lap_lai_phat_lai_thanh_tung_mau(monkeypatch: pytest.MonkeyPatch
     assert su_kien[1][1]["cached"] is True
     ghep = "".join(d["text"] for t, d in su_kien if t == "delta")
     assert ghep.strip() == "Miễn phí."
-    assert su_kien[-1][1] == {"answer": "Miễn phí.", "streamed": True}
+    assert su_kien[-1][1] == {
+        "answer": "Miễn phí.",
+        "streamed": True,
+        "message_id": None,
+    }
 
 
 def test_sse_cau_moi_khong_bi_danh_dau_cache(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -717,3 +721,60 @@ def test_sse_meta_co_documents_khi_hoi_ho_so(
         data for event, data in su_kien if event == "meta" and data.get("documents")
     ][-1]
     assert final_meta["documents"][0]["file_name"] == "Mus01 don.docx"
+
+
+def test_sse_cau_hoi_lai_co_message_id_de_feedback(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def fake_retrieve(_question: str, **_kwargs: object) -> dict:
+        return _ket_qua(
+            outcome="clarify",
+            answer="",
+            clarify={"question": "Bạn muốn hỏi thủ tục nào?", "options": []},
+        )
+
+    async def fake_persist(*_args: object, **_kwargs: object) -> str:
+        return "msg-clarify-1"
+
+    monkeypatch.setattr(retrieval, "retrieve", fake_retrieve)
+    monkeypatch.setattr(chat_api, "_persist_message", fake_persist)
+
+    su_kien = _doc_sse("/chat/stream", "đổi sổ đỏ")
+
+    assert su_kien[-1][1]["message_id"] == "msg-clarify-1"
+
+
+def test_faq_ho_so_dinh_kem_file_tu_kho(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        chat_api,
+        "_file_mau",
+        lambda code: [
+            chat_api.DocumentResponse(
+                id="doc-1",
+                document_name="Mẫu đơn",
+                file_name="mau-don.docx",
+                mime_type=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document"
+                ),
+                size_bytes=100,
+                download_url="/api/v1/documents/doc-1/download",
+            )
+        ],
+    )
+    faq = {
+        "id": "faq-1",
+        "question": "Thành phần hồ sơ?",
+        "answer": "Thủ tục 1.001699: - Mẫu đơn.",
+        "procedure_code": "1.001699",
+        "procedure_name": "Cấp Giấy xác nhận khuyết tật",
+        "intent": "required_documents",
+        "detail_url": "https://example.test",
+    }
+
+    response = chat_api._faq_chat_response(faq, exclude_question="Thành phần hồ sơ?")
+
+    assert len(response.documents) == 1
+    assert response.documents[0].download_url.endswith("/documents/doc-1/download")
+
+    faq["intent"] = "fee"
+    response = chat_api._faq_chat_response(faq, exclude_question="Thành phần hồ sơ?")
+    assert response.documents == []

@@ -60,7 +60,7 @@ def test_crud_faq_khong_gan_thu_tuc() -> None:
         assert updated.status_code == 200
         assert updated.json()["answer"] == "Đã sửa."
 
-        suggestions = client.get("/api/v1/faq/suggestions")
+        suggestions = client.get("/api/v1/faq/suggestions?limit=20")
         assert suggestions.status_code == 200
         assert any(
             item["id"] == faq_id
@@ -154,7 +154,9 @@ def test_faq_ready_duoc_tra_loi_truc_tiep_khong_qua_rag() -> None:
         assert created.status_code == 200
         faq_id = created.json()["id"]
 
-        response = client.post("/chat", json={"question": question})
+        response = client.post(
+            "/chat", json={"question": question, "faq_id": faq_id}
+        )
         assert response.status_code == 200
         body = response.json()
         assert body["answer"] == answer
@@ -163,7 +165,7 @@ def test_faq_ready_duoc_tra_loi_truc_tiep_khong_qua_rag() -> None:
         with client.stream(
             "POST",
             "/chat/stream",
-            json={"question": question},
+            json={"question": question, "faq_id": faq_id},
         ) as streamed:
             assert streamed.status_code == 200
             events: list[tuple[str, dict]] = []

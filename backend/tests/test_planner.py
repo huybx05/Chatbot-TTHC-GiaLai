@@ -188,9 +188,11 @@ def test_rank_is_unsupported() -> None:
     assert plan.unsupported[0]["reason"] == planner.REASON_UNSUPPORTED_OPERATION
 
 
-def test_related_procedures_unsupported() -> None:
+def test_related_procedures_route_sang_quan_he_thu_tuc() -> None:
     plan = plan_retrieval(_frame([_request(Facet.RELATED_PROCEDURES)]), [_resolved()])
-    assert plan.unsupported[0]["reason"] == planner.REASON_UNSUPPORTED_FACET
+
+    assert not plan.unsupported
+    assert plan.tasks[0].intent == "PROCEDURE_RELATIONS"
 
 
 def test_unknown_facet_unsupported() -> None:
@@ -296,7 +298,7 @@ MATRIX_CASES = [
     ("domain_group", "list", "none", "graph", "PROCEDURES_BY_GROUP", (), ""),
     ("target_audience", "list", "none", "", "", (), "UNSUPPORTED_FACET"),
     ("status", "get", "none", "", "", (), "UNSUPPORTED_FACET"),
-    ("related_procedures", "get", "resolved", "", "", (), "UNSUPPORTED_FACET"),
+    ("related_procedures", "get", "resolved", "graph", "PROCEDURE_RELATIONS", (), ""),
     ("unknown", "get", "resolved", "", "", (), "UNSUPPORTED_FACET"),
     ("fee", "count", "resolved", "", "", (), "UNSUPPORTED_COUNT"),
     ("fee", "rank", "resolved", "", "", (), "UNSUPPORTED_OPERATION"),
@@ -439,3 +441,33 @@ def test_list_by_level_duoc_chon_graph() -> None:
     assert not plan.unsupported
     assert plan.tasks[0].intent == "PROCEDURES_BY_LEVEL"
     assert plan.tasks[0].facet == Facet.GENERAL_INFO.value
+
+
+def test_components_duoc_chon_graph_forward() -> None:
+    plan = plan_retrieval(
+        _frame([_request(Facet.COMPONENTS, RequestOperation.LIST)]),
+        [_resolved()],
+    )
+
+    assert not plan.unsupported
+    task = plan.tasks[0]
+    assert task.tool == planner.TOOL_GRAPH
+    assert task.intent == "COMPONENTS_OF_PROCEDURE"
+    assert task.expected_types == ("THANH_PHAN_CUA",)
+    assert task.procedure_codes == ("1.001699",)
+    assert task.fallback_tool == planner.TOOL_HYBRID
+
+
+def test_parent_interlinked_duoc_chon_graph_reverse_du_co_code() -> None:
+    plan = plan_retrieval(
+        _frame([_request(Facet.PARENT_INTERLINKED, RequestOperation.LIST)]),
+        [_resolved()],
+    )
+
+    assert not plan.unsupported
+    task = plan.tasks[0]
+    assert task.tool == planner.TOOL_GRAPH
+    assert task.intent == "PROCEDURES_BY_COMPONENT"
+    assert task.expected_types == ("THANH_PHAN_CUA",)
+    assert task.procedure_codes == ("1.001699",)
+    assert task.fallback_tool == planner.TOOL_HYBRID

@@ -59,6 +59,7 @@ EDGES: frozenset[str] = frozenset(
         "DOI_TUONG_THUC_HIEN",
         "KET_QUA_XU_LY",
         "CO_QUYET_DINH",
+        "THANH_PHAN_CUA",
     }
 )
 
@@ -77,7 +78,7 @@ class Step:
 
     rels: tuple[str, ...] = ()
     label: str = ""
-    direction: str = "out"  #: ``out`` | ``in``
+    direction: str = "out"  #: ``out`` | ``in`` | ``both``
     optional: bool = False
 
     def hop(self, nguon: str, dich: str, ten_canh: str) -> str:
@@ -85,6 +86,8 @@ class Step:
         nhan = f":{self.label}" if self.label else ""
         if self.direction == "out":
             return f"MATCH ({nguon})-[{ten_canh}{rel}]->({dich}{nhan})"
+        if self.direction == "both":
+            return f"MATCH ({nguon})-[{ten_canh}{rel}]-({dich}{nhan})"
         # Chiều vào: mũi tên phải **bọc** quan hệ — ``(a)<-[e]-(b)``, không phải
         # ``(a)-[e]<-(b)`` (Cypher báo syntax error).
         return f"MATCH ({nguon})<-[{ten_canh}{rel}]-({dich}{nhan})"
@@ -145,7 +148,7 @@ def _check(shape: Shape) -> None:
         for rel in buoc.rels:
             if rel not in EDGES:
                 raise ImportError(f"{shape.kind}: cạnh lạ {rel!r}")
-        if buoc.direction not in {"out", "in"}:
+        if buoc.direction not in {"out", "in", "both"}:
             raise ImportError(f"{shape.kind}: hướng lạ {buoc.direction!r}")
         if buoc.optional and i == 0:
             raise ImportError(f"{shape.kind}: bước đầu không được optional")
@@ -264,6 +267,19 @@ SHAPES: dict[str, Shape] = {
         returns=(("vai_tro", "type(e1)"), ("gia_tri", "x.name")),
         order_by="vai_tro, gia_tri",
     ),
+    "COMPONENTS_OF_PROCEDURE": Shape(
+        kind=FORWARD,
+        steps=(Step(rels=("THANH_PHAN_CUA",), label="ThuTuc"),),
+        returns=(
+            ("ma_thanh_phan", "x.ma"),
+            ("ten_thanh_phan", "x.ten"),
+            ("ten_goi", "e1.component_name"),
+            ("source_code", "e1.source_code"),
+            ("source_url", "e1.source_url"),
+            ("detail_url", "x.detail_url"),
+        ),
+        order_by="ma_thanh_phan",
+    ),
     "CLASSIFY": Shape(
         kind=FORWARD,
         steps=(Step(rels=("CAP_THUC_HIEN", "LINH_VUC", "DOMAIN_GROUP", "TRANG_THAI")),),
@@ -349,6 +365,39 @@ SHAPES: dict[str, Shape] = {
             ("detail_url", "p.detail_url"),
         ),
         order_by="ma_thu_tuc",
+    ),
+    "PROCEDURES_BY_COMPONENT": Shape(
+        kind=REVERSE,
+        steps=(Step(rels=("THANH_PHAN_CUA",), label="ThuTuc"),),
+        filter=Filter(prop="key"),
+        filter_param="component_code",
+        returns=(
+            ("ma_thu_tuc", "p.key"),
+            ("ten", "p.ten"),
+            ("ten_goi", "e1.component_name"),
+            ("source_code", "e1.source_code"),
+            ("source_url", "e1.source_url"),
+            ("detail_url", "p.detail_url"),
+        ),
+        order_by="ma_thu_tuc",
+        count_total=True,
+    ),
+    "PROCEDURE_RELATIONS": Shape(
+        kind=FORWARD,
+        steps=(Step(rels=("THANH_PHAN_CUA",), direction="both"),),
+        returns=(
+            (
+                "vai_tro",
+                "CASE WHEN startNode(e1).key = p.key THEN 'con' ELSE 'cha' END",
+            ),
+            ("ma", "x.key"),
+            ("ten", "x.ten"),
+            ("ten_goi", "e1.component_name"),
+            ("source_code", "e1.source_code"),
+            ("source_url", "e1.source_url"),
+            ("detail_url", "x.detail_url"),
+        ),
+        order_by="vai_tro, ma",
     ),
     # ``CoQuan`` dùng ``contains`` vì tên bị nhồi: 21/33 cạnh CO_THAM_QUYEN trỏ tới
     # chuỗi 25 chi nhánh nối bằng ", ".

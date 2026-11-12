@@ -24,6 +24,8 @@ export interface ChatRequest {
   question: string;
   session_id?: string;
   history?: ChatHistoryTurn[];
+  /** Chỉ gửi khi người dùng bấm một FAQ gợi ý. */
+  faq_id?: string;
 }
 
 /** Một lựa chọn cho câu hỏi lại — giao diện vẽ thành nút bấm. */

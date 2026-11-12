@@ -81,6 +81,8 @@ export interface Conversation {
 export interface SuggestedQuestion {
   id: string;
   text: string;
+  /** ID FAQ khi gợi ý này đến từ bảng FAQ; bấm sẽ trả FAQ ngay. */
+  faqId?: string;
 }
 
 /** Dùng cho hiển thị mẫu hồ sơ để tải    */
