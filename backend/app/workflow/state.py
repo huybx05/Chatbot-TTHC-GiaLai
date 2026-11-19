@@ -300,6 +300,8 @@ class AgentState(TypedDict, total=False):
     skip_generate: bool
     #: Dấu vết vector của câu hỏi; ``""`` = câu này không cần nhúng.
     vector_hash: str
+    #: Chỉ dùng cho đánh giá local: ép nhánh ``graph`` hoặc ``hybrid``.
+    force_branch: str
 
     # ── truy xuất ────────────────────────────────────────────────────────
     evidence: list[EvidenceItem]
@@ -389,6 +391,7 @@ def new_state(question: str, *, turn_index: int = 1) -> AgentState:
         subjects=[],
         thieu=[],
         skip_generate=False,
+        force_branch="",
         resolution=ResolutionInfo(
             asked=[],
             code="",

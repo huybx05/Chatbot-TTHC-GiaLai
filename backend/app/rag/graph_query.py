@@ -678,6 +678,30 @@ INTENTS: tuple[IntentSpec, ...] = (
     # tục**. Đây chính là nhóm câu mà fact_lookup và hybrid đều không trả lời được:
     # chúng không đếm và không liệt kê đủ được.
     IntentSpec(
+        intent="COUNT_BY_AGENCY",
+        title="Số thủ tục do một cơ quan ban hành",
+        template="COUNT_BY_AGENCY",
+        each_of=(("bao nhieu", "so luong", "dem"), ("co quan", "ban hanh")),
+        needs=("agency",),
+        empty="Cơ quan này chưa ghi nhận thủ tục nào.",
+    ),
+    IntentSpec(
+        intent="COUNT_BY_LEVEL",
+        title="Số thủ tục theo cấp thực hiện",
+        template="COUNT_BY_LEVEL",
+        each_of=(("bao nhieu", "so luong", "dem"), ("cap",)),
+        needs=("level",),
+        empty="Chưa ghi nhận thủ tục nào ở cấp này.",
+    ),
+    IntentSpec(
+        intent="COUNT_BY_FIELD",
+        title="Số thủ tục theo lĩnh vực",
+        template="COUNT_BY_FIELD",
+        each_of=(("bao nhieu", "so luong", "dem"), ("linh vuc",)),
+        needs=("field",),
+        empty="Chưa ghi nhận thủ tục nào trong lĩnh vực này.",
+    ),
+    IntentSpec(
         intent="PROCEDURES_BY_AGENCY",
         title="Thủ tục do một cơ quan thực hiện",
         template="PROCEDURES_BY_AGENCY",
@@ -1394,6 +1418,18 @@ COLUMNS: dict[str, tuple[tuple[str, str, bool], ...]] = {
         ("co_quan", "Cơ quan", False),
         ("vai_tro", "Vai trò", False),
         ("detail_url", "Đường dẫn", False),
+    ),
+    "COUNT_BY_AGENCY": (
+        ("co_quan", "Cơ quan", False),
+        ("so_thu_tuc", "Số thủ tục", False),
+    ),
+    "COUNT_BY_LEVEL": (
+        ("cap", "Cấp", False),
+        ("so_thu_tuc", "Số thủ tục", False),
+    ),
+    "COUNT_BY_FIELD": (
+        ("linh_vuc", "Lĩnh vực", False),
+        ("so_thu_tuc", "Số thủ tục", False),
     ),
     "PROCEDURES_BY_LEVEL": (
         ("ma_thu_tuc", "Mã thủ tục", False),

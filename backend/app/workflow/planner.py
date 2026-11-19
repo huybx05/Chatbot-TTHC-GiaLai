@@ -222,6 +222,27 @@ def _choose_tool(
         return "", "", (), REASON_UNSUPPORTED_FACET
 
     if facet in FORWARD_CAPABILITY or facet in REVERSE_CAPABILITY:
+        if (
+            operation == RequestOperation.COUNT.value
+            and not codes
+            and facet in {
+                Facet.ISSUING_AGENCY.value,
+                Facet.IMPLEMENTING_AGENCY.value,
+                Facet.COORDINATING_AGENCY.value,
+                Facet.AUTHORIZED_AGENCY.value,
+                Facet.ADMINISTRATIVE_LEVEL.value,
+                Facet.FIELD.value,
+            }
+        ):
+            count_intent = {
+                Facet.ISSUING_AGENCY.value: "COUNT_BY_AGENCY",
+                Facet.IMPLEMENTING_AGENCY.value: "COUNT_BY_AGENCY",
+                Facet.COORDINATING_AGENCY.value: "COUNT_BY_AGENCY",
+                Facet.AUTHORIZED_AGENCY.value: "COUNT_BY_AGENCY",
+                Facet.ADMINISTRATIVE_LEVEL.value: "COUNT_BY_LEVEL",
+                Facet.FIELD.value: "COUNT_BY_FIELD",
+            }[facet]
+            return TOOL_GRAPH, count_intent, (), ""
         if facet in REVERSE_ONLY_FACETS:
             cap = REVERSE_CAPABILITY.get(facet)
         else:

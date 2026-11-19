@@ -53,6 +53,7 @@ async def retrieve(
     log_trace: bool = True,
     source: str = "api",
     memory: SessionMemory | None = None,
+    force_branch: str = "",
 ) -> dict[str, Any]:
     """Trả lời một câu hỏi, dạng **từ điển** để API gửi thẳng ra ngoài."""
     ket_qua = await ask(
@@ -65,6 +66,7 @@ async def retrieve(
         log_trace=log_trace,
         source=source,
         memory=memory,
+        force_branch=force_branch,
     )
     return ket_qua.to_dict()
 

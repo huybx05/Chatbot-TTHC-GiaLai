@@ -25,6 +25,7 @@ import ContextMenu from "../../components/client/ContextMenu";
 import DeleteDialog from "../../components/client/DeleteDialog";
 import MessageInput from "../../components/client/MessageInput";
 import MessageList from "../../components/client/MessageList";
+import { SpeechProvider } from "../../components/client/SpeechContext";
 import WelcomeView from "../../components/client/WelcomeView";
 import RenameDialog from "../../components/client/RenameDialog";
 import { SUGGESTED_QUESTIONS } from "../../data/chatSuggestions";
@@ -884,14 +885,16 @@ export default function ChatPage() {
           <>
             <main className="relative min-h-[calc(100vh-140px)] pb-36 pt-16">
               <div className="mx-auto max-w-[840px] px-6 py-8">
-                <MessageList
-                  messages={messages}
-                  followUpSuggestions={isSending ? [] : followUpSuggestions}
-                  onPickSuggestion={(text, faqId) => {
-                    setPrefill(text);
-                    void handleSend(text, faqId);
-                  }}
-                />
+                <SpeechProvider>
+                  <MessageList
+                    messages={messages}
+                    followUpSuggestions={isSending ? [] : followUpSuggestions}
+                    onPickSuggestion={(text, faqId) => {
+                      setPrefill(text);
+                      void handleSend(text, faqId);
+                    }}
+                  />
+                </SpeechProvider>
                 <div ref={cuoiTrang} />
               </div>
             </main>

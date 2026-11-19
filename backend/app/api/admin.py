@@ -1046,9 +1046,17 @@ def _rows_to_graph(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @router.get("/graph")
-def full_graph(limit: int = Query(default=1000, le=5000)) -> dict[str, Any]:
+def full_graph(limit: int = Query(default=300, le=1000)) -> dict[str, Any]:
+    """Graph mặc định lấy **cạnh gắn với thủ tục**, không lấy 1000 cạnh bất kỳ.
+
+    Một mẫu ngẫu nhiên 1000 cạnh có thể chỉ chứa vài node ThuTuc, khiến trang
+    trông như mạng lưới cơ quan/văn bản và thủ tục bị chìm. Ưu tiên cạnh có ít
+    nhất một đầu là ThuTuc giữ thủ tục làm trung tâm mà vẫn giới hạn số cạnh
+    để graph đọc được.
+    """
     query = """
     MATCH (a)-[r]->(b)
+    WHERE a:ThuTuc OR b:ThuTuc
     RETURN
       elementId(a) AS source_id,
       labels(a)[0] AS source_label,

@@ -564,16 +564,31 @@ DENIAL_PATTERN = re.compile(
 
 #: Từ đồng nghĩa tối thiểu cho **kiểm chứng** (không dùng để định tuyến).
 FACET_HINTS: dict[str, tuple[str, ...]] = {
-    "required_documents": ("ho so", "giay to"),
-    "processing_time": ("thoi han", "bao lau"),
-    "submission_method": ("cach nop", "noi nop"),
-    "receiving_agency": ("co quan tiep nhan", "nop o dau"),
-    "decision_number": ("so quyet dinh",),
-    "result_delivery": ("nhan ket qua",),
-    "legal_basis": ("van ban", "can cu"),
-    "result": ("ket qua",),
-    "steps": ("trinh tu",),
-    "fee": ("le phi",),
+    "required_documents": ("ho so", "giay to", "thanh phan ho so"),
+    "notes": ("luu y", "ghi chu"),
+    "steps": ("trinh tu", "cac buoc", "buoc thuc hien"),
+    "submission_method": ("cach nop", "noi nop", "hinh thuc nop"),
+    "receiving_agency": ("co quan tiep nhan", "nop o dau", "noi tiep nhan"),
+    "processing_time": ("thoi han", "bao lau", "thoi gian giai quyet"),
+    "fee": ("le phi", "phi", "mien phi"),
+    "result": ("ket qua", "ket qua nhan duoc"),
+    "result_delivery": ("nhan ket qua", "cach nhan ket qua"),
+    "decision_number": ("so quyet dinh", "quyet dinh ban hanh"),
+    "legal_basis": ("can cu", "van ban", "can cu phap ly"),
+    "requirements": ("dieu kien", "doi tuong", "yeu cau"),
+    "general_info": ("thong tin chung",),
+    "issuing_agency": ("co quan ban hanh",),
+    "implementing_agency": ("co quan thuc hien", "don vi thuc hien"),
+    "coordinating_agency": ("co quan phoi hop",),
+    "authorized_agency": ("co quan duoc uy quyen",),
+    "administrative_level": ("cap thuc hien", "cap nao", "cap xu ly"),
+    "field": ("linh vuc",),
+    "domain_group": ("nhom thu tuc",),
+    "status": ("trang thai",),
+    "target_audience": ("doi tuong thuc hien", "doi tuong"),
+    "related_procedures": ("thu tuc lien quan",),
+    "components": ("thu tuc thanh phan", "thu tuc con"),
+    "parent_interlinked": ("thu tuc cha", "lien thong"),
 }
 
 
@@ -581,14 +596,76 @@ def _facet_phrases(label: str, facet: str = "") -> set[str]:
     """Cụm 2–3 từ của một nhãn khía cạnh, đã bỏ dấu — để so trong từng câu trả lời."""
     from backend.app.text_norm import strip_accents
 
-    words = strip_accents(label).lower().split()
+    # Nhãn có dấu phẩy (ví dụ "điều kiện, đối tượng") từng làm bộ kiểm tra
+    # tạo ra cụm "dieu kien," và bỏ sót cụm "dieu kien". Bỏ dấu câu trước
+    # khi tách từ để kiểm tra nhất quán với câu trả lời đã chuẩn hóa.
+    normalized = re.sub(r"[^a-z0-9\s]", " ", strip_accents(label).lower())
+    words = normalized.split()
     phrases: set[str] = set(FACET_HINTS.get(facet, ()))
-    for size in (2, 3):
+    if words:
+        phrases.add(" ".join(words))
+    for size in (1, 2, 3):
         for start in range(len(words) - size + 1):
             phrase = " ".join(words[start : start + size])
             if len(phrase) >= 4:
                 phrases.add(phrase)
     return phrases
+
+
+def _evidence_facets(evidence: Sequence[dict[str, Any]]) -> set[str]:
+    """Facet đã có bằng chứng cấu trúc, không phụ thuộc cách diễn đạt của mô hình.
+
+    ``section_type`` của chunk là ``REQUIRED_DOCUMENTS``; request facet là
+    ``required_documents``. Chuẩn hoá cả hai về cùng dạng để bước kiểm chứng
+    biết rằng mục hồ sơ đã thực sự được truy xuất.
+    """
+    from backend.app.text_norm import strip_accents
+
+    facets: set[str] = set()
+    for item in evidence:
+        for key in ("facet", "section_type"):
+            raw = str(item.get(key) or "").strip()
+            if raw:
+                facets.add(strip_accents(raw).lower())
+    return facets
+
+
+def _facet_content_present(
+    text: str,
+    evidence: Sequence[dict[str, Any]],
+    facet: str,
+) -> bool:
+    """Câu trả lời có ít nhất hai từ nội dung lấy từ evidence của facet không.
+
+    Không đòi đúng nhãn "hồ sơ"; chỉ đòi câu trả lời thực sự dùng nội dung của
+    mục đã truy xuất. Hai từ là ngưỡng thấp để chấp nhận diễn đạt lại, nhưng
+    vẫn phân biệt được câu bỏ sót hoàn toàn.
+    """
+    from backend.app.text_norm import strip_accents
+
+    wanted = strip_accents(facet).lower()
+    answer_tokens = set(
+        re.sub(r"[^a-z0-9\s]", " ", strip_accents(text).lower()).split()
+    )
+    for item in evidence:
+        values = {
+            strip_accents(str(item.get(key) or "")).lower()
+            for key in ("facet", "section_type")
+        }
+        if wanted not in values:
+            continue
+        content_tokens = {
+            token
+            for token in re.sub(
+                r"[^a-z0-9\s]",
+                " ",
+                strip_accents(str(item.get("content") or "")).lower(),
+            ).split()
+            if len(token) >= 3
+        }
+        if len(content_tokens & answer_tokens) >= 2:
+            return True
+    return False
 
 
 def _sentence_matches(sentence: str, facets: Sequence[str]) -> bool:
@@ -689,16 +766,47 @@ def verify_contract(
         issues.append("omits_missing_data")
 
     status = _status_map(coverage)
+    structural_facets = _evidence_facets(evidence)
     for index, request in enumerate(requests):
         if status.get(index) != "covered":
             continue
         facet = str(request.get("facet") or "")
+        # general_info là nhãn bao quát: câu trả lời đúng nội dung có thể
+        # không chứa nguyên cụm "thông tin chung". Kiểm tra nhãn ở đây chỉ
+        # tạo false positive rồi kích hoạt fallback không cần thiết.
+        if facet == "general_info":
+            continue
+        # Ưu tiên tín hiệu cấu trúc: evidence đã có đúng facet và câu trả lời
+        # thực sự dùng nội dung của mục đó thì không bắt mô hình phải dùng đúng
+        # một cụm từ cố định. Đây là nhánh chính.
+        if facet in structural_facets and _facet_content_present(
+            clean, evidence, facet
+        ):
+            continue
+        # Fallback từ khóa chỉ dùng khi evidence không mang facet rõ ràng.
         label = NHAN_KHIA_CANH.get(facet, facet)
         phrases = _facet_phrases(label, facet)
         if phrases and not any(phrase in strip_accents(clean).lower() for phrase in phrases):
             issues.append(f"missing_covered_facet:{facet}")
     issues.extend(validate_number_claims(clean, evidence))
     return issues
+
+
+def _clip_fallback_text(text: str, limit: int = 1200) -> str:
+    """Cắt fallback theo ranh giới câu/đoạn, không cắt giữa từ.
+
+    Fallback chỉ dùng sau khi LLM đã retry thất bại; nếu buộc phải dùng thì
+    vẫn giữ trọn câu quan trọng thay vì cắt cứng ở 400 ký tự.
+    """
+    clean = " ".join(str(text or "").split())
+    if len(clean) <= limit:
+        return clean
+    cut = clean[:limit]
+    for separator in (". ", "; ", "! ", "? ", "\n"):
+        index = cut.rfind(separator)
+        if index >= max(120, int(limit * 0.5)):
+            return cut[: index + len(separator)].strip()
+    return cut.rstrip() + "…"
 
 
 def build_fallback_answer(
@@ -719,7 +827,7 @@ def build_fallback_answer(
 
     if not requests:
         dong = [
-            " ".join(str(muc.get("content") or "").split())[:400] for _, muc in chon[:3]
+            _clip_fallback_text(muc.get("content")) for _, muc in chon[:3]
         ]
         return "\n\n".join(d for d in dong if d)
 
@@ -736,7 +844,7 @@ def build_fallback_answer(
         for muc in muc_cua_y[:2]:
             noi_dung = " ".join(str(muc.get("content") or "").split())
             if noi_dung:
-                dong.append(f"- {noi_dung[:400]}")
+                dong.append(f"- {_clip_fallback_text(noi_dung)}")
         phan.append("\n".join(dong))
     return "\n\n".join(phan).strip()
 

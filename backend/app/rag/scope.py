@@ -110,17 +110,50 @@ def _khong_dau(chu: str) -> str:
     return " ".join(khong.lower().split())
 
 
+def _co_tien_to_dia_danh(truoc: str) -> bool:
+    """Có từ chỉ địa danh ngay trước tên tỉnh không.
+
+    Cần vì "Việt Nam định cư" chứa chuỗi "Nam Định" nhưng không phải địa danh.
+    Chỉ nhận tên tỉnh khi đứng đầu câu hoặc sau một từ chỉ vị trí.
+    """
+    tokens = truoc.split()
+    if not tokens:
+        return True
+    return tokens[-1] in {
+        "tinh",
+        "thanh",
+        "pho",
+        "tp",
+        "o",
+        "tai",
+        "den",
+        "tu",
+        "que",
+        "cua",
+        "huyen",
+        "xa",
+        "phuong",
+        "dia",
+        "chi",
+    }
+
+
 def tinh_khac(question: str) -> str | None:
     """Tỉnh/thành **khác Gia Lai** được nêu trong câu, nếu có.
 
     Trả về tên hiển thị để câu từ chối nói đúng điều người dùng đã hỏi. So khớp theo **ranh
     giới từ** để "Hà Nam" không khớp bừa trong "Hà Nam Định".
+
+    Không chỉ so chuỗi thô: một tên tỉnh chỉ được coi là địa danh khi đứng đầu câu
+    hoặc sau từ chỉ vị trí. Nhờ vậy "người Việt Nam định cư..." không bị hiểu nhầm
+    thành tỉnh Nam Định.
     """
     chuan = _khong_dau(question)
     for ten in sorted(TINH_KHAC, key=len, reverse=True):
         mau = r"(?<![a-z0-9])" + re.escape(_khong_dau(ten)) + r"(?![a-z0-9])"
-        if re.search(mau, chuan):
-            return ten
+        for match in re.finditer(mau, chuan):
+            if _co_tien_to_dia_danh(chuan[: match.start()]):
+                return ten
     return None
 
 

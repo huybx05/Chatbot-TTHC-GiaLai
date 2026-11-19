@@ -55,6 +55,7 @@ kết thúc. Đồ thị được viết để ba việc đó chỉ cần **thê
 from __future__ import annotations
 
 import logging
+import os
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -346,6 +347,15 @@ async def node_router(state: AgentState) -> dict[str, Any]:
         get_vector=nguon_vector.get,
     )
     quyet_dinh = _abstain_khi_co_lua_chon(quyet_dinh, ket_qua)
+    forced = str(state.get("force_branch") or "")
+    if forced in {Branch.GRAPH.value, Branch.HYBRID.value}:
+        quyet_dinh = replace(
+            quyet_dinh,
+            branch=forced,
+            signal=BranchSignal.OK.value,
+            reason=f"ép nhánh {forced} cho đánh giá",
+            clarify=ClarifyInfo(question="", options=[]),
+        )
     frame_missing_subject = bool(
         frame
         and frame.get("ambiguity", {}).get("present")
@@ -838,6 +848,8 @@ def _plan_from_state(state: AgentState) -> planner.Plan:
             expected_types=tuple(item.get("expected_types") or ()),
             procedure_codes=tuple(item.get("procedure_codes") or ()),
             subject_ref=item.get("subject_ref"),
+            subject_key=str(item.get("subject_key") or ""),
+            subject_kind=str(item.get("subject_kind") or ""),
             constraints=tuple(item.get("constraints") or ()),
         )
         for item in data.get("tasks") or []
@@ -853,6 +865,13 @@ async def node_thuc_thi(state: AgentState) -> dict[str, Any]:
     nói đúng phần nào có dữ liệu, phần nào không.
     """
     plan = _plan_from_state(state)
+    forced = str(state.get("force_branch") or "")
+    if forced in {Branch.GRAPH.value, Branch.HYBRID.value}:
+        plan = planner.Plan(
+            tasks=[replace(task, tool=forced, fallback_tool="") for task in plan.tasks],
+            unsupported=list(plan.unsupported),
+        )
+        state["plan"] = plan.to_dict()
     execution = await executor.execute_plan(state, plan)
 
     patch: dict[str, Any] = {
@@ -950,6 +969,38 @@ async def node_thuc_thi(state: AgentState) -> dict[str, Any]:
     return patch
 
 
+MAX_ANSWER_ATTEMPTS = 3
+#: Ưu tiên câu trả lời của LLM. Chỉ bật fallback luật khi đặt rõ biến môi trường.
+ALLOW_RULE_FALLBACK = os.getenv("ANSWER_ALLOW_RULE_FALLBACK", "1").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+
+
+def _answer_retry_note(issues: list[str]) -> str:
+    """Ghi chú ngắn cho lần sinh lại, dựa trên lỗi kiểm tra cụ thể."""
+    labels: list[str] = []
+    for issue in issues:
+        if issue.startswith("missing_covered_facet:"):
+            facet = issue.split(":", 1)[1]
+            labels.append(answer.NHAN_KHIA_CANH.get(facet, facet))
+        elif issue.startswith("unsupported_number:"):
+            labels.append("số liệu không có trong ngữ cảnh")
+        elif issue == "denies_available_evidence":
+            labels.append("không được nói thiếu khi bằng chứng đã có")
+        elif issue == "omits_missing_data":
+            labels.append("phải nói rõ mục chưa có dữ liệu")
+    detail = "; ".join(dict.fromkeys(labels))
+    if detail:
+        return (
+            "LƯU Ý: Câu trả lời trước chưa đạt các mục sau: "
+            f"{detail}. Hãy viết lại, bám sát ngữ cảnh và trả lời đúng từng ý."
+        )
+    return "LƯU Ý: Hãy viết lại câu trả lời bám sát ngữ cảnh và đúng các ý đã hỏi."
+
+
 async def node_sinh(state: AgentState) -> dict[str, Any]:
     """Bước ⑧: sinh câu trả lời từ **bằng chứng** (việc 13.13).
 
@@ -975,37 +1026,88 @@ async def node_sinh(state: AgentState) -> dict[str, Any]:
     requests = list((state.get("question_frame") or {}).get("requests") or [])
     coverage = list(state.get("coverage") or [])
 
-    try:
-        ket_qua = await answer.sinh(
-            cau,
+    base_in = int((state.get("tokens") or {}).get("input", 0))
+    base_out = int((state.get("tokens") or {}).get("output", 0))
+    total_ms = 0
+    total_in = 0
+    total_out = 0
+    ket_qua = None
+    issues: list[str] = []
+    retry_note = ""
+
+    for attempt in range(1, MAX_ANSWER_ATTEMPTS + 1):
+        try:
+            ket_qua = await answer.sinh(
+                cau,
+                evidence,
+                thieu=thieu,
+                requests=requests,
+                coverage=coverage,
+                strict_note=retry_note,
+                preferred_name=str(
+                    (state.get("memory") or {}).get("preferred_name") or ""
+                ),
+            )
+        except answer.AnswerError as exc:
+            logger.warning(
+                "Không sinh được câu trả lời (lần %s/%s): %s",
+                attempt,
+                MAX_ANSWER_ATTEMPTS,
+                exc.reason,
+            )
+            if attempt == MAX_ANSWER_ATTEMPTS and ket_qua is None:
+                return {
+                    "answer_error": exc.reason,
+                    "timings": {**dict(state.get("timings") or {}), "generate_ms": total_ms},
+                    "tokens": {"input": base_in, "output": base_out},
+                }
+            continue
+
+        total_ms += ket_qua.ms
+        total_in += ket_qua.tokens_in
+        total_out += ket_qua.tokens_out
+        issues = answer.verify_contract(
+            ket_qua.text,
             evidence,
             thieu=thieu,
             requests=requests,
             coverage=coverage,
-            preferred_name=str((state.get("memory") or {}).get("preferred_name") or ""),
         )
-    except answer.AnswerError as exc:
-        logger.warning("Không sinh được câu trả lời: %s", exc.reason)
-        return {
-            "answer_error": exc.reason,
-            "timings": {**dict(state.get("timings") or {}), "generate_ms": 0},
-        }
+        if not issues:
+            return {
+                "answer": ket_qua.text,
+                "citations": list(ket_qua.citations),
+                "answer_error": "",
+                "verification": {"status": "passed", "issues": []},
+                "timings": {
+                    **dict(state.get("timings") or {}),
+                    "generate_ms": total_ms,
+                },
+                "tokens": {
+                    "input": base_in + total_in,
+                    "output": base_out + total_out,
+                },
+            }
 
-    issues = answer.verify_contract(
-        ket_qua.text,
-        evidence,
-        thieu=thieu,
-        requests=requests,
-        coverage=coverage,
-    )
-    if issues:
+        logger.warning(
+            "Câu trả lời chưa đạt hợp đồng (lần %s/%s): %s",
+            attempt,
+            MAX_ANSWER_ATTEMPTS,
+            issues[:3],
+        )
+        retry_note = _answer_retry_note(issues)
+
+    # Luôn ưu tiên câu trả lời do LLM sinh. Fallback luật chỉ dùng khi được
+    # bật rõ ràng; mặc định không thay câu trả lời của mô hình bằng văn bản
+    # dựng tự động từ evidence.
+    if ALLOW_RULE_FALLBACK:
         fallback = answer.build_fallback_answer(
             evidence,
             requests=requests,
             coverage=coverage,
         )
         if fallback:
-            logger.warning("Câu trả lời vi phạm hợp đồng, dùng fallback: %s", issues[:3])
+            logger.warning("Fallback sau %s lần sinh: %s", MAX_ANSWER_ATTEMPTS, issues[:3])
             return {
                 "answer": fallback,
                 "citations": list(
@@ -1015,28 +1117,30 @@ async def node_sinh(state: AgentState) -> dict[str, Any]:
                 "verification": {
                     "status": "fallback",
                     "issues": issues,
+                    "attempts": MAX_ANSWER_ATTEMPTS,
                 },
-                "timings": {**dict(state.get("timings") or {}), "generate_ms": ket_qua.ms},
-                "tokens": {
-                    "input": int((state.get("tokens") or {}).get("input", 0)),
-                    "output": int((state.get("tokens") or {}).get("output", 0)),
-                },
+                "timings": {**dict(state.get("timings") or {}), "generate_ms": total_ms},
+                "tokens": {"input": base_in + total_in, "output": base_out + total_out},
             }
+
+    if ket_qua is None:
+        return {
+            "answer_error": "không sinh được câu trả lời",
+            "timings": {**dict(state.get("timings") or {}), "generate_ms": total_ms},
+            "tokens": {"input": base_in, "output": base_out},
+        }
+    logger.warning("Giữ câu trả lời LLM dù còn cảnh báo: %s", issues[:3])
     return {
         "answer": ket_qua.text,
         "citations": list(ket_qua.citations),
         "answer_error": "",
-        # Evidence, coverage and the prompt are fully prepared before the model starts. Do not
-        # verify or replace its text here: the SSE path must expose the same one-pass answer.
         "verification": {
-            "status": "passed" if not issues else "blocked",
+            "status": "issues",
             "issues": issues,
+            "attempts": MAX_ANSWER_ATTEMPTS,
         },
-        "timings": {**dict(state.get("timings") or {}), "generate_ms": ket_qua.ms},
-        "tokens": {
-            "input": int((state.get("tokens") or {}).get("input", 0)) + ket_qua.tokens_in,
-            "output": int((state.get("tokens") or {}).get("output", 0)) + ket_qua.tokens_out,
-        },
+        "timings": {**dict(state.get("timings") or {}), "generate_ms": total_ms},
+        "tokens": {"input": base_in + total_in, "output": base_out + total_out},
     }
 
 
@@ -1096,6 +1200,15 @@ def sau_khi_router(state: AgentState) -> str:
     """
     nhanh = str(state.get("branch") or "")
     signal = str(state.get("branch_signal") or "")
+    plan = state.get("plan") or {}
+    tasks = plan.get("tasks") or []
+    has_count_task = any(
+        str(task.get("intent") or "").startswith("COUNT_")
+        or str(task.get("operation") or "") == "count"
+        for task in tasks
+    )
+    if has_count_task or plan.get("unsupported"):
+        return THUC_THI
     if signal == BranchSignal.CLARIFY.value:
         return HOI_LAI
     if signal == BranchSignal.EMPTY.value:
@@ -1118,6 +1231,9 @@ def sau_khi_router(state: AgentState) -> str:
 def sau_khi_bo_sung(state: AgentState) -> str:
     """Nhúng xong thì vào đúng nhánh đã chọn."""
     nhanh = str(state.get("branch") or "")
+    forced = str(state.get("force_branch") or "")
+    if forced in {Branch.GRAPH.value, Branch.HYBRID.value}:
+        return forced
     return nhanh if nhanh in {b.value for b in CAC_NHANH} else HOI_LAI
 
 

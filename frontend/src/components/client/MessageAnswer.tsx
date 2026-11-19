@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { RichText } from "../RichText";
 import { FileList } from "./FileAttachment";
+import { useSpeech, type SpeechChannel } from "./SpeechContext";
 import { saveAnswerFeedback, type AnswerFeedback } from "../../api/feedback";
 
 import type {
@@ -73,6 +74,66 @@ function ListItems({ items }: { items: ListItem[] }) {
   );
 }
 
+/** Chỉ lấy phần trả lời chính; bỏ nguồn, file và ký tự Markdown trước khi đọc. */
+function speechText(message: AssistantMessage, channel: SpeechChannel): string {
+  const hasAttachment =
+    message.blocks.some((block) => block.kind === "files") ||
+    message.blocks.some(
+      (block) =>
+        "text" in block &&
+        /(?:File mẫu:|\{\{file:|file đính kèm|tệp đính kèm)/i.test(block.text),
+    );
+
+  const clean = (value: string) =>
+    value
+      // `answer.py` chèn "File mẫu: {{file:<id>}} — <tên>" ngay sau dòng hồ sơ,
+      // không nhất thiết ở đầu dòng. Bỏ từ "File mẫu:" đến hết dòng để không đọc
+      // cả mã lẫn tên file, nhưng vẫn giữ phần nội dung phía trước.
+      .replace(/File mẫu:.*$/gim, "")
+      .replace(/\{\{file:[^}]+\}\}/g, "")
+      .replace(/\(?\s*(?:file|tệp)\s+đính kèm\s*:[^)\n]*\)?/gi, "")
+      .replace(/(?:Tài liệu|Tệp|File)\s+đính kèm\s*:.*$/gim, "")
+      .replace(/(?:Mã tệp|Mã file|File ID)\s*:.*$/gim, "")
+      .replace(/\*\*/g, "")
+      .replace(/`/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/https?:\/\/\S+/g, "")
+      .replace(/[*#]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const parts: string[] = [];
+  for (const block of message.blocks) {
+    if (block.kind === "citation" || block.kind === "files") continue;
+    if (block.kind === "heading" || block.kind === "paragraph") {
+      const text = clean(block.text);
+      if (text) parts.push(text);
+      continue;
+    }
+    if (block.kind === "strongParagraph") {
+      const text = clean(`${block.label}: ${block.text}`);
+      if (text) parts.push(text);
+      continue;
+    }
+    for (const item of block.items) {
+      const text = clean(
+        [item.label, item.text, item.legal].filter(Boolean).join(" "),
+      );
+      if (text) parts.push(text);
+    }
+  }
+
+  // Phương án 2 + 3: chỉ đọc loại giấy tờ, gộp thông báo file mẫu một lần ở cuối.
+  if (hasAttachment) {
+    parts.push(
+      channel === "voice"
+        ? "Các biểu mẫu này có thể tải trên Cổng dịch vụ công hoặc nhận tại quầy hướng dẫn."
+        : "Các biểu mẫu cần thiết đã được đính kèm trong câu trả lời để bạn tải về.",
+    );
+  }
+  return parts.join(". ");
+}
+
 function Block({
   block,
   fileMap,
@@ -135,6 +196,10 @@ export default function MessageAnswer({ message }: { message: AssistantMessage }
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const [feedbackSaving, setFeedbackSaving] = useState(false);
   const [feedbackError, setFeedbackError] = useState("");
+  const speech = useSpeech();
+  const speechContent = speechText(message, speech?.channel ?? "screen");
+  const isSpeaking = speech?.playingId === message.id;
+  const isLoadingSpeech = speech?.loadingId === message.id;
 
   const persistFeedback = async (
     next: AnswerFeedback | null,
@@ -287,12 +352,26 @@ export default function MessageAnswer({ message }: { message: AssistantMessage }
           </button>
           <button
             type="button"
-            title="Nghe câu trả lời (sắp có)"
-            aria-label="Nghe câu trả lời"
-            aria-disabled="true"
-            className="flex size-8 cursor-default items-center justify-center rounded-full text-text-secondary/70"
+            title={
+              speech?.error ||
+              (isSpeaking
+                ? "Dừng đọc câu trả lời"
+                : "Nghe câu trả lời")
+            }
+            aria-label={isSpeaking ? "Dừng đọc câu trả lời" : "Nghe câu trả lời"}
+            aria-pressed={isSpeaking}
+            disabled={!speech || !speechContent || isLoadingSpeech}
+            onClick={() => {
+              if (!speech) return;
+              void speech.play(message.id, speechContent);
+            }}
+            className={`flex size-8 cursor-pointer items-center justify-center rounded-full transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-40 ${isSpeaking ? "text-primary" : ""}`}
           >
-            <span className="material-symbols-outlined text-[18px]">volume_up</span>
+            <span
+              className={`material-symbols-outlined text-[18px] ${isLoadingSpeech ? "animate-spin" : ""}`}
+            >
+              {isLoadingSpeech ? "progress_activity" : isSpeaking ? "stop_circle" : "volume_up"}
+            </span>
           </button>
         </div>
         )}

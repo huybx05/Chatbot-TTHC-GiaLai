@@ -94,7 +94,7 @@ IMPORT_HEADERS = (
     "Danh mục",
     "Trạng thái",
 )
-MAX_IMPORT_ROWS = 1_000
+MAX_IMPORT_ROWS = 2_000
 MAX_SECTION_CHARS = 4_500
 
 DOCUMENT_SYSTEM_PROMPT = """Bạn là chuyên viên hành chính đang soạn FAQ cho cổng dịch vụ công.
@@ -122,6 +122,35 @@ Quy tắc bắt buộc:
   "required_documents": "câu trả lời hoặc null"
 }
 """
+
+def _partial_system_prompt(section_types: tuple[str, ...]) -> str:
+    labels = [SECTION_LABEL[item] for item in section_types]
+    keys = [INTENT_BY_SECTION[item] for item in section_types]
+    label_text = ", ".join(labels)
+    json_lines = "\n".join(
+        f'  "{key}": "câu trả lời hoặc null"' for key in keys
+    )
+    return f"""Bạn là chuyên viên hành chính đang soạn FAQ cho cổng dịch vụ công.
+
+Nhiệm vụ: từ nội dung nguồn của một thủ tục, chỉ soạn câu trả lời cho các chủ đề:
+- {label_text}
+
+Quy tắc bắt buộc:
+1. Chỉ dùng nội dung nguồn. Không suy đoán, không bịa số tiền, thời hạn, địa chỉ.
+2. Nếu nguồn không có dữ liệu cho chủ đề nào, trả null cho chủ đề đó.
+3. Câu trả lời phải lịch sự, rõ ràng, đủ ý.
+4. Câu trả lời phải bắt đầu bằng đúng chuỗi:
+   "Thủ tục <mã> (<tên thủ tục>):"
+5. Sau dòng đầu, trình bày nhãn chủ đề in đậm:
+   {label_text}
+6. Chỉ dùng **...** để in đậm; không dùng markdown khác.
+7. Không dùng ký hiệu trích dẫn kiểu [1], [2].
+8. Trả về JSON hợp lệ, không markdown, không giải thích ngoài JSON:
+{{
+{json_lines}
+}}
+"""
+
 
 _SENTINEL_VALUES = {
     "không có thông tin",
@@ -193,12 +222,12 @@ def _clean_text(value: Any) -> str:
 
 def _is_usable_section(text: str) -> bool:
     normalized = " ".join(text.casefold().split())
-    if len(normalized) < 20:
+    if not normalized:
         return False
-    # Nhiều section chỉ có sentinel, không đủ nội dung để tạo FAQ.
-    return normalized not in _SENTINEL_VALUES and not (
-        len(normalized) < 90
-        and any(normalized.startswith(item) for item in _SENTINEL_VALUES)
+    # Chỉ loại section rỗng hoặc chỉ có câu kiểu "Không có thông tin".
+    # Giá trị ngắn như "Miễn phí" vẫn là dữ liệu và phải được giữ lại.
+    return normalized not in _SENTINEL_VALUES and not any(
+        normalized.startswith(item) for item in _SENTINEL_VALUES
     )
 
 
@@ -373,6 +402,7 @@ def load_candidates(
     *,
     section_types: tuple[str, ...] = SECTION_TYPES,
     procedure_codes: set[str] | None = None,
+    require_all: bool = True,
 ) -> list[dict[str, Any]]:
     sql = text(
         """
@@ -414,12 +444,16 @@ def load_candidates(
 
     candidates: list[dict[str, Any]] = []
     for record in records.values():
-        missing = [item for item in section_types if not record["sections"].get(item)]
-        if missing:
+        available = [
+            item for item in section_types if record["sections"].get(item)
+        ]
+        if not available:
+            continue
+        if require_all and len(available) != len(section_types):
             continue
         record["sections"] = {
             key: "\n\n".join(record["sections"][key])[:MAX_SECTION_CHARS]
-            for key in section_types
+            for key in available
         }
         candidates.append(record)
     return candidates
@@ -464,9 +498,15 @@ def generate_one(
     code = str(procedure["procedure_code"])
     name = str(procedure["procedure_name"] or code)
     sections = procedure["sections"]
+    available_types = tuple(
+        section_type for section_type in section_types
+        if sections.get(section_type)
+    )
+    if not available_types:
+        return []
     source = "\n\n".join(
         f"[{SECTION_LABEL[section_type]}]\n{sections[section_type]}"
-        for section_type in section_types
+        for section_type in available_types
     )
     preserve_lines = section_types == DOCUMENT_SECTION_TYPES
     if preserve_lines:
@@ -480,12 +520,20 @@ def generate_one(
             f"\"Thủ tục {code} ({name}):\"."
         )
     else:
-        system_prompt = SYSTEM_PROMPT
+        if len(available_types) == len(SECTION_TYPES):
+            system_prompt = SYSTEM_PROMPT
+            request_text = "Hãy soạn 3 câu trả lời theo đúng JSON đã yêu cầu."
+        else:
+            system_prompt = _partial_system_prompt(available_types)
+            request_text = (
+                "Hãy soạn câu trả lời cho đúng các mục có trong nguồn "
+                "và theo JSON đã yêu cầu."
+            )
         user = (
             f"THỦ TỤC: {code} — {name}\n"
             f"LĨNH VỰC: {procedure.get('domain_group') or ''}\n\n"
             f"NỘI DUNG NGUỒN:\n{source}\n\n"
-            "Hãy soạn 3 câu trả lời theo đúng JSON đã yêu cầu. "
+            f"{request_text} "
             "Câu trả lời phải bắt đầu bằng đúng chuỗi "
             f"\"Thủ tục {code} ({name}):\"."
         )
@@ -531,9 +579,13 @@ def generate_one(
 
     questions = make_questions(procedure)
     rows: list[dict[str, str]] = []
-    for section_type in section_types:
+    for section_type in available_types:
         intent = INTENT_BY_SECTION[section_type]
         answer = _answer_value(data.get(intent), preserve_lines=True)
+        if not answer:
+            # Nếu LLM trả null nhưng nguồn thực sự có dữ liệu, dùng nguồn
+            # thay vì bỏ qua. Chỉ bỏ khi section không có nội dung.
+            answer = str(sections.get(section_type) or "").strip()
         if not answer:
             continue
         answer = format_faq_answer(
@@ -543,8 +595,6 @@ def generate_one(
             label=SECTION_LABEL[section_type],
             preserve_lines=preserve_lines,
         )
-        if len(answer) < 35:
-            continue
         rows.append(
             {
                 "question": questions[intent],
@@ -717,6 +767,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--per-domain", type=int, default=20, help="Quota mỗi domain.")
     parser.add_argument(
+        "--codes-file",
+        type=Path,
+        default=None,
+        help="Chỉ xử lý các mã thủ tục trong file, mỗi dòng một mã.",
+    )
+    parser.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Cho phép thủ tục chỉ có một phần các mục basic thay vì đủ cả 3.",
+    )
+    parser.add_argument(
         "--output",
         type=Path,
         default=ROOT / "data" / "faq_generated" / "faq_generated.xlsx",
@@ -757,13 +818,30 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    allowed_codes: set[str] | None = None
+    if args.codes_file is not None:
+        if not args.codes_file.exists():
+            raise SystemExit(f"Không thấy file mã: {args.codes_file}")
+        allowed_codes = {
+            line.strip().lstrip("\ufeff")
+            for line in args.codes_file.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+        if not allowed_codes:
+            raise SystemExit("File mã thủ tục đang rỗng.")
+        print(f"Mã trong file: {len(allowed_codes)}")
+
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if args.facet == "documents":
         section_types = DOCUMENT_SECTION_TYPES
-        existing_codes = load_existing_procedure_codes()
+        if allowed_codes is not None:
+            # Có file mã riêng: lấy đúng các mã đó, không phụ thuộc 3 FAQ basic.
+            procedure_codes = allowed_codes
+        else:
+            procedure_codes = load_existing_procedure_codes()
         candidates = load_candidates(
             section_types=section_types,
-            procedure_codes=existing_codes,
+            procedure_codes=procedure_codes,
         )
         # documents dùng đúng tập thủ tục đã có 3 FAQ cũ.
         selected = sorted(
@@ -775,15 +853,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         if args.procedures > 0:
             selected = selected[: args.procedures]
-        print(f"Thủ tục đã có FAQ cũ: {len(existing_codes)}")
+        print(f"Mã nguồn cho hồ sơ: {len(procedure_codes)}")
         print(f"Ứng viên đủ thành phần hồ sơ: {len(candidates)}")
     else:
         section_types = SECTION_TYPES
-        candidates = load_candidates()
+        candidates = load_candidates(require_all=not args.allow_partial)
+        if allowed_codes is not None:
+            candidates = [
+                item for item in candidates
+                if str(item["procedure_code"]) in allowed_codes
+            ]
         selected = select_procedures(
             candidates, limit=args.procedures, per_domain=args.per_domain
         )
-        print(f"Ứng viên đủ 3 mục: {len(candidates)}")
+        print(f"Ứng viên có ít nhất một mục: {len(candidates)}")
     print(f"Đã chọn: {len(selected)} thủ tục")
     by_domain: dict[str, int] = defaultdict(int)
     for item in selected:

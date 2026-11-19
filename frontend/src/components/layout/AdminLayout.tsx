@@ -2,7 +2,9 @@ import { useEffect, useState } from "react";
 import { NavLink, Outlet } from "react-router-dom";
 
 import { getAdminSystemStatus, type AdminSystemStatus } from "../../api/admin";
+import { type AuthUser } from "../../api/auth";
 import { chatHomeUrl } from "../../api/config";
+import AccountMenu from "./AccountMenu";
 
 const NAV_ITEMS = [
   { to: "/admin", label: "Tổng quan", icon: "dashboard", end: true },
@@ -13,7 +15,6 @@ const NAV_ITEMS = [
   { to: "/admin/conversations", label: "Lịch sử hội thoại", icon: "forum", end: false },
   { to: "/admin/costs", label: "Quản lý chi phí AI", icon: "payments", end: false },
   { to: "/admin/users", label: "Quản lý người dùng", icon: "group", end: false },
-  { to: "/admin/operations", label: "Vận hành (Đang thử nghiệm)", icon: "settings_suggest", end: false },
 ];
 
 function navClass({ isActive }: { isActive: boolean }) {
@@ -26,10 +27,12 @@ function navClass({ isActive }: { isActive: boolean }) {
 }
 
 type AdminLayoutProps = {
+  user: AuthUser;
+  onUserUpdated: (user: AuthUser) => void;
   onLogout: () => void;
 };
 
-export default function AdminLayout({ onLogout }: AdminLayoutProps) {
+export default function AdminLayout({ user, onUserUpdated, onLogout }: AdminLayoutProps) {
   const [status, setStatus] = useState<AdminSystemStatus | null>(null);
 
   useEffect(() => {
@@ -82,14 +85,11 @@ export default function AdminLayout({ onLogout }: AdminLayoutProps) {
             <span className="material-symbols-outlined text-[18px]">arrow_back</span>
             Giao diện chatbot
           </a>
-          <button
-            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-danger hover:bg-danger-surface"
-            type="button"
-            onClick={onLogout}
-          >
-            <span className="material-symbols-outlined text-[18px]">logout</span>
-            Đăng xuất
-          </button>
+          <AccountMenu
+            user={user}
+            onUserUpdated={onUserUpdated}
+            onLogout={onLogout}
+          />
         </div>
       </aside>
 

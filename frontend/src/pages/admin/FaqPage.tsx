@@ -28,6 +28,20 @@ type FormState = {
 
 type FaqTab = "ready" | "draft";
 
+const FILTER_INTENTS = [
+  "required_documents",
+  "fee",
+  "processing_time",
+  "submission_method",
+] as const;
+
+const FALLBACK_INTENT_LABELS: Record<string, string> = {
+  required_documents: "Hồ sơ, giấy tờ",
+  fee: "Phí, lệ phí",
+  processing_time: "Thời hạn giải quyết",
+  submission_method: "Cách nộp hồ sơ",
+};
+
 const EMPTY_FORM: FormState = {
   question: "",
   answer: "",
@@ -47,6 +61,10 @@ function searchKey(value: string) {
     .replace(/[\u0300-\u036f]/g, "");
 }
 
+function procedureDigits(value: string) {
+  return String(value || "").replace(/\D/g, "");
+}
+
 export default function FaqPage() {
   const [items, setItems] = useState<AdminFaq[]>([]);
   const [intents, setIntents] = useState<AdminFaqIntent[]>([]);
@@ -63,7 +81,10 @@ export default function FaqPage() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [exportStatus, setExportStatus] = useState<"all" | "ready" | "draft">("all");
-  const [exportProcedure, setExportProcedure] = useState("");
+  const [procedureFilter, setProcedureFilter] = useState("");
+  const [selectedIntents, setSelectedIntents] = useState<Set<string>>(new Set());
+  const [intentFilterOpen, setIntentFilterOpen] = useState(false);
+  const intentFilterRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const filteredProcedures = useMemo(() => {
@@ -78,9 +99,47 @@ export default function FaqPage() {
     return matches.slice(0, 20);
   }, [procedures, procedureQuery]);
 
+  useEffect(() => {
+    const valid = new Set<string>(FILTER_INTENTS);
+    setSelectedIntents((current) => {
+      const retained = new Set([...current].filter((value) => valid.has(value)));
+      return retained.size > 0 ? retained : new Set(valid);
+    });
+  }, [intents]);
+
+  useEffect(() => {
+    setSelectedIds(new Set());
+  }, [selectedIntents, procedureFilter]);
+
+  useEffect(() => {
+    if (!intentFilterOpen) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (
+        intentFilterRef.current &&
+        !intentFilterRef.current.contains(event.target as Node)
+      ) {
+        setIntentFilterOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    return () => document.removeEventListener("pointerdown", closeOnOutside);
+  }, [intentFilterOpen]);
+
+  const procedureFilterDigits = procedureDigits(procedureFilter);
+  const matchesProcedureFilter = (item: AdminFaq) =>
+    !procedureFilterDigits ||
+    procedureDigits(item.procedure_code ?? "").includes(procedureFilterDigits);
+
   const visibleItems = useMemo(
-    () => items.filter((item) => item.status === tab),
-    [items, tab],
+    () =>
+      items.filter(
+        (item) =>
+          item.status === tab &&
+          selectedIntents.size > 0 &&
+          selectedIntents.has(item.intent) &&
+          matchesProcedureFilter(item),
+      ),
+    [items, tab, selectedIntents, procedureFilterDigits],
   );
 
   const selected = useMemo(
@@ -88,11 +147,46 @@ export default function FaqPage() {
     [items, selectedId],
   );
 
-  const readyCount = items.filter((item) => item.status === "ready").length;
-  const draftCount = items.filter((item) => item.status !== "ready").length;
+  const readyCount = items.filter(
+    (item) =>
+      item.status === "ready" &&
+      selectedIntents.has(item.intent) &&
+      matchesProcedureFilter(item),
+  ).length;
+  const draftCount = items.filter(
+    (item) =>
+      item.status !== "ready" &&
+      selectedIntents.has(item.intent) &&
+      matchesProcedureFilter(item),
+  ).length;
   const allVisibleSelected =
     visibleItems.length > 0 &&
     visibleItems.every((item) => selectedIds.has(item.id));
+
+  const intentFilters = FILTER_INTENTS.map((value) => ({
+    value,
+    label:
+      intents.find((item) => item.value === value)?.label ??
+      FALLBACK_INTENT_LABELS[value],
+  }));
+  const allIntentsSelected = FILTER_INTENTS.every((value) =>
+    selectedIntents.has(value),
+  );
+
+  function toggleIntent(value: string) {
+    setSelectedIntents((current) => {
+      const next = new Set(current);
+      if (next.has(value)) next.delete(value);
+      else next.add(value);
+      return next;
+    });
+  }
+
+  function toggleAllIntents() {
+    setSelectedIntents(
+      allIntentsSelected ? new Set() : new Set(FILTER_INTENTS),
+    );
+  }
 
   const isNew = selectedId === "";
 
@@ -292,7 +386,7 @@ export default function FaqPage() {
     setError("");
     setNotice("");
     try {
-      await downloadAdminFaqExport(exportStatus, exportProcedure);
+      await downloadAdminFaqExport(exportStatus, procedureFilter);
     } catch (reason) {
       setError(
         reason instanceof Error ? reason.message : "Không xuất được FAQ.",
@@ -334,9 +428,79 @@ export default function FaqPage() {
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_440px]">
         <Card>
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <p className="text-sm font-semibold text-text-secondary">
-              Danh sách câu hỏi
-            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <select
+                aria-label="Phạm vi export FAQ"
+                value={exportStatus}
+                onChange={(event) =>
+                  setExportStatus(event.target.value as "all" | "ready" | "draft")
+                }
+                className="h-9 rounded-lg border border-border-color bg-white px-2 text-xs font-semibold outline-primary"
+              >
+                <option value="all">Toàn bộ FAQ</option>
+                <option value="ready">FAQ đang hoạt động</option>
+                <option value="draft">FAQ bản nháp</option>
+              </select>
+              <div className="relative">
+                <span className="material-symbols-outlined pointer-events-none absolute left-2 top-1/2 -translate-y-1/2 text-[17px] text-text-secondary">
+                  search
+                </span>
+                <input
+                  value={procedureFilter}
+                  onChange={(event) => setProcedureFilter(event.target.value)}
+                  placeholder="Mã thủ tục"
+                  aria-label="Tìm theo mã thủ tục"
+                  inputMode="numeric"
+                  className="h-9 w-40 rounded-lg border border-border-color bg-white pl-8 pr-2 text-xs outline-primary"
+                />
+              </div>
+              <div ref={intentFilterRef} className="relative">
+                <button
+                  type="button"
+                  aria-haspopup="true"
+                  aria-expanded={intentFilterOpen}
+                  onClick={() => setIntentFilterOpen((current) => !current)}
+                  className="flex h-9 items-center gap-1.5 rounded-lg border border-border-color px-3 text-xs font-bold text-text-primary hover:bg-secondary-surface"
+                >
+                  <span className="material-symbols-outlined text-[18px]">
+                    filter_list
+                  </span>
+                  Bộ lọc
+                  {selectedIntents.size !== FILTER_INTENTS.length ? (
+                    <span className="text-primary">({selectedIntents.size})</span>
+                  ) : null}
+                </button>
+                {intentFilterOpen ? (
+                  <div className="absolute left-0 top-10 z-30 w-64 rounded-lg border border-border-color bg-card-surface p-3 shadow-xl">
+                    <label className="flex cursor-pointer items-center gap-2 border-b border-border-color pb-2 text-xs font-bold">
+                      <input
+                        type="checkbox"
+                        checked={allIntentsSelected}
+                        onChange={toggleAllIntents}
+                        className="h-4 w-4 accent-primary"
+                      />
+                      Tất cả danh mục
+                    </label>
+                    <div className="mt-2 space-y-2">
+                      {intentFilters.map((intent) => (
+                        <label
+                          key={intent.value}
+                          className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-text-secondary"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedIntents.has(intent.value)}
+                            onChange={() => toggleIntent(intent.value)}
+                            className="h-4 w-4 accent-primary"
+                          />
+                          {intent.label}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
@@ -356,25 +520,6 @@ export default function FaqPage() {
                 accept=".xlsx"
                 className="hidden"
                 onChange={(event) => void handleImport(event.target.files?.[0])}
-              />
-              <select
-                aria-label="Phạm vi export FAQ"
-                value={exportStatus}
-                onChange={(event) =>
-                  setExportStatus(event.target.value as "all" | "ready" | "draft")
-                }
-                className="h-9 rounded-lg border border-border-color bg-white px-2 text-xs font-semibold outline-primary"
-              >
-                <option value="all">Toàn bộ FAQ</option>
-                <option value="ready">FAQ đang hoạt động</option>
-                <option value="draft">FAQ bản nháp</option>
-              </select>
-              <input
-                value={exportProcedure}
-                onChange={(event) => setExportProcedure(event.target.value)}
-                placeholder="Mã thủ tục"
-                aria-label="Mã thủ tục cần export"
-                className="h-9 w-28 rounded-lg border border-border-color bg-white px-2 text-xs outline-primary"
               />
               <button
                 type="button"
@@ -523,9 +668,11 @@ export default function FaqPage() {
 
             {visibleItems.length === 0 ? (
               <p className="rounded-lg border border-dashed border-border-color p-4 text-sm text-text-secondary">
-                {tab === "ready"
-                  ? "Chưa có FAQ đang hoạt động. Bấm “Thêm FAQ” để tạo câu hỏi đầu tiên."
-                  : "Chưa có FAQ nháp."}
+                {procedureFilterDigits
+                  ? `Không tìm thấy FAQ khớp mã thủ tục "${procedureFilter}".`
+                  : tab === "ready"
+                    ? "Chưa có FAQ đang hoạt động. Bấm “Thêm FAQ” để tạo câu hỏi đầu tiên."
+                    : "Chưa có FAQ nháp."}
               </p>
             ) : null}
           </div>

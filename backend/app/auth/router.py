@@ -256,6 +256,41 @@ class AdminUserUpdateRequest(BaseModel):
             raise ValueError("Cần cung cấp ít nhất một thông tin để cập nhật.")
 
 
+class SelfAccountUpdateRequest(BaseModel):
+    """Admin tự đổi username/password; luôn cần mật khẩu hiện tại."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    current_password: str
+    username: str | None = None
+    new_password: str | None = None
+
+    @field_validator("current_password")
+    @classmethod
+    def validate_current_password(cls, value: str) -> str:
+        if not value:
+            raise ValueError("Cần nhập mật khẩu hiện tại.")
+        return value
+
+    @field_validator("username")
+    @classmethod
+    def validate_self_username(cls, value: str | None) -> str | None:
+        return RegisterRequest.validate_username(value) if value is not None else None
+
+    @field_validator("new_password")
+    @classmethod
+    def validate_new_password(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if value == "":
+            raise ValueError("Mật khẩu mới không được để trống.")
+        return value
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.username is None and self.new_password is None:
+            raise ValueError("Cần chọn đổi tên đăng nhập hoặc mật khẩu.")
+
+
 def _admin_user_response(row: Any) -> dict[str, Any]:
     last_seen_at = row["last_seen_at"]
     return {
@@ -787,6 +822,86 @@ def logout_all(user: CurrentUser, conn: DBConn, response: Response) -> dict[str,
     _xoa_session_cookie(response)
     _ghi_audit(conn, user_id=user["id"], action="logout_all", detail={"sessions": n})
     return {"status": "đã thu hồi mọi phiên", "so_phien": n}
+
+
+@router.patch("/me", summary="Tự đổi tên đăng nhập hoặc mật khẩu")
+def update_me(
+    payload: SelfAccountUpdateRequest,
+    request: Request,
+    user: CurrentUser,
+    conn: DBConn,
+) -> dict[str, Any]:
+    """Admin tự cập nhật tài khoản, không cần OTP nhưng phải có mật khẩu hiện tại."""
+    _enforce_rate_limit(request, "account_update", settings.login_rate_limit_per_min)
+    row = conn.execute(
+        text(
+            """
+            SELECT id, username, password_hash, role, is_active, last_seen_at
+              FROM users
+             WHERE id = :user_id
+            """
+        ),
+        {"user_id": user["id"]},
+    ).mappings().first()
+    if row is None or not row["is_active"]:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, detail=LOI_DANG_NHAP)
+    if not verify_password(payload.current_password, row["password_hash"]):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            detail="Mật khẩu hiện tại không đúng.",
+        )
+
+    password_changed = payload.new_password is not None
+    password_hash = hash_password(payload.new_password) if password_changed else None
+    next_username = payload.username if payload.username is not None else row["username"]
+
+    try:
+        updated = conn.execute(
+            text(
+                """
+                UPDATE users
+                   SET username = :username,
+                       password_hash = COALESCE(:password_hash, password_hash),
+                       failed_attempts = CASE
+                           WHEN :password_hash IS NULL THEN failed_attempts
+                           ELSE 0
+                       END,
+                       locked_until = CASE
+                           WHEN :password_hash IS NULL THEN locked_until
+                           ELSE NULL
+                       END
+                 WHERE id = :user_id
+                 RETURNING id, username, role, is_active, last_seen_at
+                """
+            ),
+            {
+                "user_id": user["id"],
+                "username": next_username,
+                "password_hash": password_hash,
+            },
+        ).mappings().one()
+        if password_changed:
+            # Đổi mật khẩu phải làm mọi phiên cũ mất hiệu lực, kể cả phiên đang mở.
+            revoke_all_sessions(conn, user["id"])
+        conn.commit()
+    except IntegrityError:
+        conn.rollback()
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            detail="Tên đăng nhập đã được sử dụng.",
+        ) from None
+
+    _ghi_audit(
+        conn,
+        user_id=user["id"],
+        action="self_account_updated",
+        ip=_client_ip(request),
+        detail={
+            "password_changed": password_changed,
+            "username_changed": payload.username is not None,
+        },
+    )
+    return {"user": _admin_user_response(updated)}
 
 
 @router.get("/me", summary="Thông tin người đang đăng nhập")

@@ -678,7 +678,6 @@ export default function ConversationsPage() {
                     </td>
                     <td className="py-3 pl-16 pr-4 text-left align-middle">
                       <p className="line-clamp-2 font-semibold">{log.question}</p>
-                      <p className="mt-1 truncate text-xs text-text-secondary">{log.session}</p>
                     </td>
                     <td className="px-4 py-3 align-middle">
                       <Badge tone={sourceTone(log.source)}>{log.source}</Badge>

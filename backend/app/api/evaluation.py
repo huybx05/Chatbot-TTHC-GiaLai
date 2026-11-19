@@ -81,6 +81,7 @@ async def evaluation_run(
         "faq_id": response.faq_id or "",
         "citations": [item.model_dump() for item in response.citations],
         "documents": [item.model_dump() for item in response.documents],
+        "contexts": [item.model_dump() for item in response.contexts],
         "suggestions": [item.model_dump() for item in response.suggestions],
         "coverage": response.coverage,
     }

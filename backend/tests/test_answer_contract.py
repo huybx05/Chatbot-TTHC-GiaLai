@@ -236,3 +236,105 @@ def test_node_sinh_reports_empty_model_output(monkeypatch, text) -> None:
     monkeypatch.setattr(answer, "dang_bat", lambda: True)
     patch = asyncio.run(graph.node_sinh(_state()))
     assert patch["answer_error"]
+
+
+def test_facet_phrases_bo_dau_phay_va_nhan_dung_dieu_kien() -> None:
+    phrases = answer._facet_phrases("điều kiện, đối tượng", "requirements")
+    assert "dieu kien" in phrases
+
+    issues = answer.verify_contract(
+        "**điều kiện, đối tượng**: Cơ sở phải có giấy phép.",
+        [_evidence(facet="requirements", content="Điều kiện: có giấy phép.")],
+        requests=[
+            {
+                "text": "điều kiện",
+                "facet": "requirements",
+                "operation": "get",
+                "subject_ref": 0,
+            }
+        ],
+        coverage=[{"request_index": 0, "status": "covered"}],
+    )
+    assert not any(item.startswith("missing_covered_facet:") for item in issues)
+
+
+def test_node_sinh_retry_truoc_khi_fallback(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_sinh(*_args, **kwargs):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return _result("Hồ sơ gồm đơn đề nghị.")
+        return _result("Hồ sơ gồm đơn đề nghị. Thời hạn giải quyết là 9 ngày.")
+
+    monkeypatch.setattr(answer, "sinh", fake_sinh)
+    monkeypatch.setattr(answer, "dang_bat", lambda: True)
+
+    state = _state()
+    state["thieu"] = []
+    state["evidence"] = [
+        _evidence("required_documents", content="Hồ sơ gồm đơn đề nghị."),
+        _evidence("processing_time", content="Thời hạn: 9 ngày."),
+    ]
+    state["question_frame"]["requests"] = _requests("required_documents", "processing_time")
+    state["coverage"] = [
+        {"request_index": 0, "status": "covered", "facet": "required_documents"},
+        {"request_index": 1, "status": "covered", "facet": "processing_time"},
+    ]
+
+    patch = asyncio.run(graph.node_sinh(state))
+
+    assert calls["count"] == 2
+    assert patch["verification"]["status"] == "passed"
+    assert "9 ngày" in patch["answer"]
+
+
+def test_node_sinh_fallback_sau_khi_retry_het(monkeypatch) -> None:
+    calls = {"count": 0}
+
+    async def fake_sinh(*_args, **_kwargs):
+        calls["count"] += 1
+        return _result("Hồ sơ gồm đơn đề nghị.")
+
+    monkeypatch.setattr(answer, "sinh", fake_sinh)
+    monkeypatch.setattr(answer, "dang_bat", lambda: True)
+    monkeypatch.setattr(graph, "ALLOW_RULE_FALLBACK", True)
+
+    patch = asyncio.run(graph.node_sinh(_state()))
+
+    assert calls["count"] == graph.MAX_ANSWER_ATTEMPTS
+    assert patch["verification"]["status"] == "fallback"
+
+
+def test_general_info_khong_can_nhan_thong_tin_chung() -> None:
+    issues = answer.verify_contract(
+        "Thủ tục có mã 1.014359 là thủ tục giải quyết chế độ mai táng phí.",
+        [_evidence("general_info", content="Mã thủ tục: 1.014359")],
+        requests=[
+            {
+                "text": "thủ tục này là gì",
+                "facet": "general_info",
+                "operation": "get",
+                "subject_ref": 0,
+            }
+        ],
+        coverage=[{"request_index": 0, "status": "covered"}],
+    )
+    assert issues == []
+
+def test_verifier_required_documents_dung_evidence_khong_bat_nhan_tu_khoa() -> None:
+    """Câu trả lời có nội dung hồ sơ nhưng không dùng đúng chữ "hồ sơ" vẫn đạt."""
+    issues = answer.verify_contract(
+        "Nội dung chung: Đơn phúc khảo của thí sinh, 1 bản chính.",
+        [_evidence()],
+        requests=[
+            {
+                "text": "cần chuẩn bị hồ sơ gì",
+                "facet": "required_documents",
+                "operation": "get",
+                "subject_ref": 0,
+            }
+        ],
+        coverage=[{"request_index": 0, "status": "covered", "facet": "required_documents"}],
+    )
+    assert "missing_covered_facet:required_documents" not in issues

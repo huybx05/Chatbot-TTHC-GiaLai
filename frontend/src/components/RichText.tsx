@@ -20,16 +20,29 @@ export function RichText({
   return <div className={className}>{dinh_dang(text, fileMap)}</div>;
 }
 
-function FileChip({ file }: { file: ProcedureDocument }) {
+function FileChip({
+  file,
+  fileName,
+}: {
+  file: ProcedureDocument;
+  fileName?: string;
+}) {
   return (
     <a
       href={file.download_url}
       download={file.file_name}
-      className="ml-1 inline-flex items-center gap-1 rounded-md border border-primary/30 bg-primary-soft px-1.5 py-0.5 align-baseline text-[11.5px] font-medium text-primary no-underline hover:border-primary/60"
-      title={`Tải ${file.file_name}`}
+      className="ml-2 inline-flex items-center gap-1 align-middle text-[12px] font-medium text-primary no-underline transition-colors hover:bg-orange-50 hover:text-orange-700"
+      title={`Tải ${fileName || file.file_name}`}
     >
-      <span className="material-symbols-outlined text-[14px]">attach_file</span>
-      Mẫu
+      <span className="flex h-3 w-3 shrink-0 items-center justify-center">
+        <span className="material-symbols-outlined text-[12px] leading-none">download</span>
+      </span>
+      <span className="underline decoration-primary/40 underline-offset-2">
+        Tải biểu mẫu
+      </span>
+      <span className="text-text-primary no-underline">
+        — {fileName || file.file_name}
+      </span>
     </a>
   );
 }
@@ -38,6 +51,24 @@ function render_text(
   chu: string,
   fileMap?: Record<string, ProcedureDocument>,
 ): ReactNode {
+  // Một số câu trả lời chèn nguyên cụm "File mẫu: {{file:id}} — tên file".
+  // Gộp cả cụm thành một link để không còn chip "Mẫu" rời và tên file đứng riêng.
+  const attachment = chu.match(
+    /^(.*?)\s*File mẫu:\s*\{\{file:([^}]+)\}\}\s*[—–-]\s*(.+)$/,
+  );
+  if (attachment) {
+    const [, before, fileId, fileName] = attachment;
+    const file = fileMap?.[fileId];
+    if (file) {
+      return (
+        <>
+          {before ? render_text(before, fileMap) : null}
+          <FileChip file={file} fileName={fileName} />
+        </>
+      );
+    }
+  }
+
   const parts = chu.split(/(\*\*.+?\*\*|\{\{file:[^}]+\}\})/g);
   if (parts.length === 1) return chu;
 

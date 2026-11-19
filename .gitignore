@@ -115,3 +115,14 @@ graphify-out/*
 /Evaluation_dev_xlsx
 
 /PROJECT_GUIDE_V4_1.md
+
+# ---------------------------------------------------------------------------
+# Tài liệu/đánh giá nội bộ — không đưa lên GitHub
+# ---------------------------------------------------------------------------
+/Evaluation_dev.xlsx
+/ra_soat_chuong_5.md
+/viet_truoc_chuong5.md
+/data-gym-cache/
+
+# Môi trường RAGAS local
+.venv-ragas/

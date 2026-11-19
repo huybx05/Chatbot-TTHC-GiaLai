@@ -127,6 +127,10 @@ Quy tắc:
   phí/lệ phí -> fee; ai/cơ quan nào xử lý -> implementing_agency; căn cứ/văn bản nào ->
   legal_basis; số quyết định ban hành -> decision_number; nhận được gì -> result;
   nhận kết quả bằng cách nào -> result_delivery.
+- Hỏi "cấp thực hiện", "cấp nào", "thực hiện ở cấp nào" -> administrative_level;
+  không dùng implementing_agency cho câu hỏi về cấp.
+- Hỏi "cơ quan thực hiện", "đơn vị thực hiện", "ai xử lý" -> implementing_agency;
+  không dùng administrative_level cho câu hỏi về cơ quan.
 - Hỏi "lưu ý", "chú ý", "cần biết" về nội dung thủ tục -> required_documents, vì cổng
   thường đặt mục "Lưu ý" trong thành phần hồ sơ; không gán general_info cho câu này.
 - Câu có nhiều ý phải có đủ requests, không gộp thành general_info.
@@ -599,6 +603,48 @@ def _apply_notes_facet(frame: QuestionFrame, question: str) -> QuestionFrame:
     return frame
 
 
+def _apply_facet_guards(frame: QuestionFrame, question: str) -> QuestionFrame:
+    """Sửa hai nhầm lẫn hẹp đã thấy trong log.
+
+    1. "cấp thực hiện" bị gán thành ``implementing_agency``.
+    2. Câu "thời hạn và lệ phí" bị gộp thành một ``general_info``.
+    """
+    normalized = strip_accents(question).lower()
+    requests = frame["requests"]
+
+    for request in requests:
+        text = strip_accents(str(request.get("text") or "")).lower() or normalized
+        if request.get("facet") == Facet.IMPLEMENTING_AGENCY and any(
+            phrase in text
+            for phrase in ("cap thuc hien", "cap nao", "thuc hien o cap")
+        ):
+            request["facet"] = Facet.ADMINISTRATIVE_LEVEL
+
+    if len(requests) == 1 and requests[0].get("facet") == Facet.GENERAL_INFO:
+        has_time = any(
+            phrase in normalized
+            for phrase in ("thoi han", "bao lau", "thoi gian giai quyet")
+        )
+        has_fee = any(
+            phrase in normalized for phrase in ("le phi", "phi, le phi", "tien phi")
+        )
+        if has_time and has_fee:
+            base = dict(requests[0])
+            requests[:] = [
+                {
+                    **base,
+                    "text": "thời hạn giải quyết",
+                    "facet": Facet.PROCESSING_TIME,
+                },
+                {
+                    **base,
+                    "text": "phí, lệ phí",
+                    "facet": Facet.FEE,
+                },
+            ]
+    return frame
+
+
 def _merge_duplicate_requests(frame: QuestionFrame) -> QuestionFrame:
     """Gộp các request cùng facet/operation/subject/constraint/scenario.
 
@@ -681,6 +727,7 @@ async def parse_question(
     if not content:
         raise QuestionParserError("mo hinh tra noi dung rong")
     frame = _apply_notes_facet(parse_frame(content), original_question or question)
+    frame = _apply_facet_guards(frame, original_question or question)
     frame = _merge_duplicate_requests(frame)
     usage = getattr(response, "usage", None)
     result = ParseResult(

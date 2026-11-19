@@ -220,6 +220,7 @@ async def ask(
     log_trace: bool = True,
     source: str = "api",
     memory: SessionMemory | None = None,
+    force_branch: str = "",
 ) -> RunResult:
     """Chạy một câu hỏi trọn luồng. Đây là hàm **duy nhất** bên ngoài được gọi.
 
@@ -234,6 +235,7 @@ async def ask(
     state["rewrite"] = dict(rewrite or {})
     state["memory"] = memory.to_dict() if memory is not None else {}
     state["skip_generate"] = not generate
+    state["force_branch"] = force_branch
 
     try:
         ra = await WORKFLOW.ainvoke(state)

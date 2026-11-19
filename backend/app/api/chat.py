@@ -520,9 +520,22 @@ class DocumentResponse(BaseModel):
     file_ids: list[str] = []
 
 
+class ContextResponse(BaseModel):
+    """Đoạn nội dung đã được đưa vào câu trả lời, dùng cho đánh giá RAG."""
+
+    text: str
+    procedure_code: str = ""
+    section_type: str = ""
+    title: str = ""
+    url: str = ""
+    score: float = 0.0
+
+
 class ChatResponse(BaseModel):
     answer: str
     citations: list[CitationResponse]
+    #: Các đoạn nội dung thực sự đã được đưa vào ngữ cảnh trả lời.
+    contexts: list[ContextResponse] = Field(default_factory=list)
     procedure: ProcedureSummary | None = None
     #: File mẫu — chỉ có khi câu trả lời phủ facet ``required_documents``.
     documents: list[DocumentResponse] = Field(default_factory=list)
@@ -831,9 +844,23 @@ def _dung_phan_hoi(result: dict[str, Any]) -> ChatResponse:
         else []
     )
 
+    contexts = [
+        ContextResponse(
+            text=str(item.get("content") or "").strip(),
+            procedure_code=str(item.get("procedure_code") or "").strip(),
+            section_type=str(item.get("section_type") or "").strip(),
+            title=str(item.get("title") or "").strip(),
+            url=str(item.get("detail_url") or "").strip(),
+            score=float(item.get("score") or 0),
+        )
+        for item in (result.get("evidence") or [])
+        if isinstance(item, dict) and str(item.get("content") or "").strip()
+    ]
+
     return ChatResponse(
         answer=answer,
         citations=_gop_nguon(list(result.get("citations") or []), ma_thu_tuc=code),
+        contexts=contexts,
         procedure=(
             ProcedureSummary(procedure_code=code, procedure_name=name or code)
             if answered_with_evidence and code

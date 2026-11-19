@@ -14,15 +14,8 @@ import { Badge, Card, MetricCard, PageHeader, SectionTitle } from "./shared.tsx"
 type ForceNode = GraphNode & { id: string; fx?: number; fy?: number; x?: number; y?: number };
 type ForceLink = GraphEdge & { source: string | ForceNode; target: string | ForceNode };
 
-/** Đầu mút của cạnh sau khi mô phỏng: `source`/`target` đã được thay bằng chính object node. */
-type LinkEndpoint = ForceNode & { x?: number; y?: number };
-
-function isPositionedNode(value: string | ForceNode): value is LinkEndpoint {
-  return typeof value !== "string" && typeof value.x === "number" && typeof value.y === "number";
-}
-
 const COLORS: Record<string, string> = {
-  ThuTuc: "#00c2d7",
+  ThuTuc: "#e07a3f",
   CoQuan: "#57d9d5",
   VanBanPhapLy: "#e3c437",
   LinhVuc: "#f5d8b7",
@@ -44,7 +37,8 @@ function propertyText(node: ForceNode, key: string) {
 
 function shortLabel(node: ForceNode) {
   const text = node.label === "ThuTuc" ? propertyText(node, "ma") || propertyText(node, "key") || node.name : node.name;
-  return text.length > 24 ? `${text.slice(0, 22)}…` : text;
+  const limit = node.label === "ThuTuc" ? 24 : 18;
+  return text.length > limit ? `${text.slice(0, limit - 2)}…` : text;
 }
 
 function propertyEntries(node: GraphNode) {
@@ -65,6 +59,8 @@ export default function GraphPage() {
   const [selectedId, setSelectedId] = useState("");
   const [error, setError] = useState("");
   const [graphKey, setGraphKey] = useState(0);
+  const [hoveredId, setHoveredId] = useState("");
+  const [showLabels, setShowLabels] = useState(true);
 
   // Trạng thái hover để đổi con trỏ; đổi state chỉ khi giá trị ĐỔI.
   const [cursorOnNode, setCursorOnNode] = useState(false);
@@ -111,14 +107,20 @@ export default function GraphPage() {
   }
 
   function handleCanvasMove(event: React.MouseEvent<HTMLDivElement>) {
-    const on = Boolean(hitTest(graphPointFromEvent(event, event.currentTarget)));
+    const hit = hitTest(graphPointFromEvent(event, event.currentTarget));
+    const on = Boolean(hit);
     // Chỉ đổi state khi trạng thái hover ĐỔI — set mỗi lần chuột nhích sẽ re-render liên tục.
     setCursorOnNode((current) => (current === on ? current : on));
+    setHoveredId((current) => {
+      const next = hit ? String(hit.id) : "";
+      return current === next ? current : next;
+    });
   }
 
   function handleCanvasClick(event: React.MouseEvent<HTMLDivElement>) {
     const hit = hitTest(graphPointFromEvent(event, event.currentTarget));
-    if (hit) setSelectedId(String(hit.id));
+    // Bấm vùng trống để bỏ chọn, trả graph về trạng thái bình thường.
+    setSelectedId(hit ? String(hit.id) : "");
   }
 
   const graphData = useMemo(
@@ -147,6 +149,23 @@ export default function GraphPage() {
     () => edges.filter((edge) => edge.source === selectedId || edge.target === selectedId).map((edge) => edge.type),
     [edges, selectedId],
   );
+  const totalNodes = useMemo(
+    () => stats.nodes.reduce((total, item) => total + Number(item.count || 0), 0),
+    [stats.nodes],
+  );
+  const totalRelationships = useMemo(
+    () => stats.relationships.reduce((total, item) => total + Number(item.count || 0), 0),
+    [stats.relationships],
+  );
+  const highlightedIds = useMemo(() => {
+    if (!selectedId) return null;
+    const ids = new Set<string>([selectedId]);
+    for (const edge of edges) {
+      if (edge.source === selectedId) ids.add(edge.target);
+      if (edge.target === selectedId) ids.add(edge.source);
+    }
+    return ids;
+  }, [edges, selectedId]);
 
   function selectNode(node: ForceNode) {
     setSelectedId(String(node.id));
@@ -222,11 +241,16 @@ export default function GraphPage() {
         </div>
       ) : null}
 
-      <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+      <div className="mb-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
         <MetricCard label="Trạng thái đồ thị" value="Sẵn sàng" note={mode} />
         <MetricCard label="Loại quan hệ" value={String(stats.relationships.length)} note="Các loại quan hệ trong đồ thị" />
         <MetricCard label="Loại nút" value={String(stats.nodes.length)} note="Các loại nút trong đồ thị" />
         <MetricCard label="Đang hiển thị" value={`${nodes.length}/${edges.length}`} note="nút / quan hệ" />
+        <MetricCard
+          label="Toàn bộ đồ thị"
+          value={`${totalNodes}/${totalRelationships}`}
+          note="nút / quan hệ"
+        />
       </div>
 
       <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_360px]">
@@ -245,6 +269,15 @@ export default function GraphPage() {
               Toàn bộ đồ thị
             </button>
           </div>
+          <label className="mb-3 flex w-fit items-center gap-2 text-xs font-semibold text-text-secondary">
+            <input
+              type="checkbox"
+              checked={showLabels}
+              onChange={(event) => setShowLabels(event.target.checked)}
+              className="accent-primary"
+            />
+            Hiện tên trên đồ thị
+          </label>
           <div
             className="h-[640px] overflow-hidden rounded-xl border border-border-color bg-[#181b1f]"
             style={{ cursor: cursorOnNode ? "pointer" : "default" }}
@@ -257,6 +290,10 @@ export default function GraphPage() {
               graphData={graphData}
               backgroundColor="#181b1f"
               enableNodeDrag
+              cooldownTicks={120}
+              warmupTicks={40}
+              d3AlphaDecay={0.03}
+              d3VelocityDecay={0.3}
               nodeLabel={(node) => {
                 const item = node as ForceNode;
                 return `${item.label}: ${shortLabel(item)}\n${item.name}`;
@@ -272,7 +309,11 @@ export default function GraphPage() {
                 const isProcedure = item.label === "ThuTuc";
                 const radius = isProcedure ? 7.5 : 5.5;
                 const selectedNode = selectedId === String(item.id);
+                const hoveredNode = hoveredId === String(item.id);
+                const dimmed =
+                  Boolean(selectedId) && !highlightedIds?.has(String(item.id));
 
+                ctx.globalAlpha = dimmed ? 0.16 : 1;
                 ctx.beginPath();
                 ctx.arc(x, y, radius, 0, 2 * Math.PI, false);
                 ctx.fillStyle = colorOf(item.label);
@@ -289,6 +330,20 @@ export default function GraphPage() {
                   ctx.stroke();
                 }
 
+                if (dimmed) {
+                  ctx.globalAlpha = 1;
+                  return;
+                }
+
+                // Hiện nhãn của tất cả node khi bật, nhưng node bị dim khi chọn
+                // vẫn ẩn để graph không rối. Tên dài đã được shortLabel rút gọn "…";
+                // chi tiết đầy đủ nằm ở panel bên phải.
+                const showLabel = showLabels || selectedNode || hoveredNode;
+                if (!showLabel) {
+                  ctx.globalAlpha = 1;
+                  return;
+                }
+
                 const label = shortLabel(item);
                 const fontSize = isProcedure ? 11 / globalScale : 9 / globalScale;
                 ctx.font = `700 ${fontSize}px "Inter", Arial, sans-serif`;
@@ -303,6 +358,7 @@ export default function GraphPage() {
                 ctx.fillRect(x - textWidth / 2 - padding, textY - padding / 2, textWidth + padding * 2, fontSize + padding * 1.6);
                 ctx.fillStyle = "#f8efe4";
                 ctx.fillText(label, x, textY);
+                ctx.globalAlpha = 1;
               }}
               nodePointerAreaPaint={(node, color, ctx) => {
                 const item = node as ForceNode & { x?: number; y?: number };
@@ -324,65 +380,18 @@ export default function GraphPage() {
               }}
               linkColor={(link) => {
                 const item = link as ForceLink;
-                return selectedId && (graphId(item.source) === selectedId || graphId(item.target) === selectedId) ? "#f2e7d8" : "#8d949e";
+                if (!selectedId) return "rgba(141, 148, 158, 0.45)";
+                return graphId(item.source) === selectedId || graphId(item.target) === selectedId
+                  ? "#f2e7d8"
+                  : "rgba(141, 148, 158, 0.08)";
               }}
               linkLabel={(link) => String((link as ForceLink).type)}
-              /**
-               * Vẽ TÊN QUAN HỆ lên chính đường edge.
-               *
-               * `linkLabel` chỉ là tooltip khi rê chuột — thư viện không vẽ nhãn lên đường.
-               * Muốn thấy thường trực thì phải tự vẽ. Chế độ `"after"` để nhãn nằm ĐÈ LÊN
-               * đường, không bị đường vẽ sau che mất.
-               */
-              linkCanvasObjectMode={() => "after"}
-              linkCanvasObject={(link, ctx, globalScale) => {
-                const item = link as ForceLink;
-                // Chỉ hiện nhãn của quan hệ thuộc đỉnh đang chọn khi đã có đỉnh được chọn,
-                // để graph dày không rối. Chưa chọn gì thì hiện hết.
-                const isNeighbourEdge =
-                  Boolean(selectedId) &&
-                  (graphId(item.source) === selectedId || graphId(item.target) === selectedId);
-                if (selectedId && !isNeighbourEdge) return;
-
-                const source = item.source;
-                const target = item.target;
-                if (!isPositionedNode(source) || !isPositionedNode(target)) return;
-                const sx = source.x as number;
-                const sy = source.y as number;
-                const tx = target.x as number;
-                const ty = target.y as number;
-
-                const label = String(item.type);
-                if (!label) return;
-
-                // Đặt nhãn ở giữa đường, xoay theo hướng đường.
-                const midX = (sx + tx) / 2;
-                const midY = (sy + ty) / 2;
-                let angle = Math.atan2(ty - sy, tx - sx);
-                // Lật nhãn lại nếu đường dốc ngược, để chữ không bị lộn ngược.
-                if (angle > Math.PI / 2) angle -= Math.PI;
-                else if (angle < -Math.PI / 2) angle += Math.PI;
-
-                const fontSize = 10 / globalScale;
-                ctx.save();
-                ctx.translate(midX, midY);
-                ctx.rotate(angle);
-                ctx.font = `600 ${fontSize}px "Inter", Arial, sans-serif`;
-                ctx.textAlign = "center";
-                ctx.textBaseline = "middle";
-
-                const textWidth = ctx.measureText(label).width;
-                const padX = 4 / globalScale;
-                const textHeight = fontSize * 1.4;
-                ctx.fillStyle = isNeighbourEdge ? "rgba(24, 27, 31, 0.92)" : "rgba(24, 27, 31, 0.68)";
-                ctx.fillRect(-textWidth / 2 - padX, -textHeight / 2, textWidth + padX * 2, textHeight);
-                ctx.fillStyle = isNeighbourEdge ? "#ffd166" : "#c9c2b8";
-                ctx.fillText(label, 0, 0);
-                ctx.restore();
-              }}
               linkWidth={(link) => {
                 const item = link as ForceLink;
-                return selectedId && (graphId(item.source) === selectedId || graphId(item.target) === selectedId) ? 1.8 : 0.7;
+                if (!selectedId) return 0.7;
+                return graphId(item.source) === selectedId || graphId(item.target) === selectedId
+                  ? 1.8
+                  : 0.35;
               }}
               linkDirectionalParticles={(link) => ((link as ForceLink).type === "THU_TUC_LIEN_QUAN" ? 2 : 0)}
               linkDirectionalParticleSpeed={0.004}

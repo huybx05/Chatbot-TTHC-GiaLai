@@ -96,6 +96,24 @@ class Settings(BaseSettings):
     #: (chỉ nên dùng khi chạy local/tunnel tạm thời).
     evaluation_api_token: str = ""
 
+    # ── 1e. TEXT-TO-SPEECH (VieNeu Cloud API) ───────────────────────────────
+    #: API key lấy tại https://www.vieneu.io/#/developer. Không đặt trong frontend.
+    vieneu_api_key: str = ""
+    #: Base URL của Cloud API; không thêm dấu "/" ở cuối.
+    vieneu_base_url: str = "https://api.vieneu.io/api/v1"
+    #: Voice id lấy từ GET /v1/voices?engine=v4.
+    vieneu_voice: str = "Ngọc Lan"
+    #: Model tương thích OpenAI; VieNeu nhận "tts-1" và tự ánh xạ sang engine v4.
+    vieneu_model: str = "tts-1"
+    #: Tốc độ đọc; API chấp nhận 0.25–4.0 nhưng thực tế giữ chất lượng ở 0.5–3.0.
+    vieneu_speed: float = 1.15
+    #: Timeout gọi TTS (giây). Câu trả lời dài có thể cần lâu hơn chat thường.
+    vieneu_timeout_s: float = 120.0
+    #: Chặn text quá dài trước khi gửi sang API để tránh tốn phí ngoài ý muốn.
+    tts_max_chars: int = 4_000
+    #: Giới hạn số lần tạo audio mỗi IP mỗi phút.
+    tts_rate_limit_per_min: int = 10
+
     # ── 1c. SHORT-TERM MEMORY ───────────────────────────────────────────────
     # Công tắc rollback: tắt là bỏ qua toàn bộ memory, giữ hành vi cũ.
     memory_enabled: bool = True

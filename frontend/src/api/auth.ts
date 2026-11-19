@@ -90,3 +90,22 @@ export async function logout(): Promise<void> {
     credentials: "include",
   });
 }
+
+export type SelfAccountUpdate = {
+  current_password: string;
+  username?: string;
+  new_password?: string;
+};
+
+export async function updateMyAccount(
+  payload: SelfAccountUpdate,
+): Promise<AuthResponse> {
+  const response = await fetch(`${API_V1_URL}/auth/me`, {
+    method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  return parseResponse<AuthResponse>(response);
+}

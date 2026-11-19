@@ -66,3 +66,24 @@ def test_api_dung_answered_procedure_khong_dung_candidate() -> None:
 
     assert response.procedure is not None
     assert response.procedure.procedure_code == "1.014100"
+
+
+def test_contexts_lay_tu_bang_chung_duoc_dua_vao_cau_tra_loi() -> None:
+    result = _result(outcome="answered", answerable=True)
+    result["evidence"] = [
+        {
+            "content": "Lệ phí: 50.000 đồng.",
+            "procedure_code": "1.014100",
+            "section_type": "FEE",
+            "title": "Phí, lệ phí",
+            "detail_url": "https://dichvucong.gov.vn/thu-tuc-hanh-chinh/1",
+            "score": 0.9,
+        }
+    ]
+
+    response = _dung_phan_hoi(result)
+
+    assert len(response.contexts) == 1
+    assert response.contexts[0].text == "Lệ phí: 50.000 đồng."
+    assert response.contexts[0].section_type == "FEE"
+    assert response.contexts[0].url.endswith("/1")

@@ -37,7 +37,7 @@ router = APIRouter(
 )
 
 MAX_IMPORT_BYTES = 5 * 1024 * 1024
-MAX_IMPORT_ROWS = 1_000
+MAX_IMPORT_ROWS = 2_000
 
 IMPORT_HEADERS = (
     "Câu hỏi",

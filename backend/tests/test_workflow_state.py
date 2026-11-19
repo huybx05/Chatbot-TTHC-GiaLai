@@ -60,6 +60,8 @@ TRUONG_MONG_DOI = {
     "grounded_procedure",
     "answered_procedure",
     "vector_hash",
+    # chỉ dùng cho đánh giá local
+    "force_branch",
     # truy xuất
     "evidence",
     "branch",
