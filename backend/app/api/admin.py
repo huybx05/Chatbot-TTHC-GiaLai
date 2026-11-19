@@ -1046,7 +1046,7 @@ def _rows_to_graph(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @router.get("/graph")
-def full_graph(limit: int = Query(default=300, le=1000)) -> dict[str, Any]:
+def full_graph(limit: int = Query(default=120, le=1000)) -> dict[str, Any]:
     """Graph mặc định lấy **cạnh gắn với thủ tục**, không lấy 1000 cạnh bất kỳ.
 
     Một mẫu ngẫu nhiên 1000 cạnh có thể chỉ chứa vài node ThuTuc, khiến trang
