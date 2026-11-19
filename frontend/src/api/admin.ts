@@ -445,7 +445,7 @@ export function getGraphStats() {
   return request<GraphStats>("/api/admin/graph/stats");
 }
 
-const GRAPH_DISPLAY_LIMIT = 120;
+const GRAPH_DISPLAY_LIMIT = 300;
 export function getFullGraph(limit = GRAPH_DISPLAY_LIMIT) {
   return request<{ nodes: GraphNode[]; edges: GraphEdge[] }>(
     `/api/admin/graph?limit=${limit}`,

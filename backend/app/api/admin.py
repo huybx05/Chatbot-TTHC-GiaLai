@@ -1046,7 +1046,7 @@ def _rows_to_graph(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @router.get("/graph")
-def full_graph(limit: int = Query(default=120, le=1000)) -> dict[str, Any]:
+def full_graph(limit: int = Query(default=300, le=1000)) -> dict[str, Any]:
     """Graph mặc định lấy **cạnh gắn với thủ tục**, không lấy 1000 cạnh bất kỳ.
 
     Một mẫu ngẫu nhiên 1000 cạnh có thể chỉ chứa vài node ThuTuc, khiến trang
@@ -1055,19 +1055,23 @@ def full_graph(limit: int = Query(default=120, le=1000)) -> dict[str, Any]:
     để graph đọc được.
     """
     query = """
-    MATCH (a)-[r]->(b)
-    WHERE a:ThuTuc OR b:ThuTuc
+    MATCH (p:ThuTuc)
+    WITH p
+    ORDER BY p.key
+    LIMIT 80
+
+    MATCH (p)-[r]-(n)
     RETURN
-      elementId(a) AS source_id,
-      labels(a)[0] AS source_label,
-      coalesce(a.ten, a.name, a.ma, a.key) AS source_name,
-      properties(a) AS source_properties,
-      type(r) AS relationship,
-      elementId(b) AS target_id,
-      labels(b)[0] AS target_label,
-      coalesce(b.name, b.ten, b.ma, b.key) AS target_name,
-      properties(b) AS target_properties
-    LIMIT $limit
+    elementId(p) AS source_id,
+    labels(p)[0] AS source_label,
+    coalesce(p.ten, p.name, p.ma, p.key) AS source_name,
+    properties(p) AS source_properties,
+    type(r) AS relationship,
+    elementId(n) AS target_id,
+    labels(n)[0] AS target_label,
+    coalesce(n.name, n.ten, n.ma, n.key) AS target_name,
+    properties(n) AS target_properties
+    LIMIT 300
     """
     with driver.session(database=settings.neo4j_database) as session:
         rows = session.run(query, limit=limit).data()
