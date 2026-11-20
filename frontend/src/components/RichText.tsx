@@ -47,42 +47,66 @@ function FileChip({
   );
 }
 
+function render_inline(
+  chu: string,
+  fileMap?: Record<string, ProcedureDocument>,
+  keyPrefix = "",
+): ReactNode[] {
+  const parts = chu.split(/(\*\*[^*]+\*\*|\{\{file:[^}]+\}\})/g);
+  return parts
+    .map((part, index) => {
+      if (part.startsWith("**") && part.endsWith("**")) {
+        return <strong key={`${keyPrefix}-bold-${index}`}>{part.slice(2, -2)}</strong>;
+      }
+      const marker = part.match(/^\{\{file:([^}]+)\}\}$/);
+      if (marker) {
+        const file = fileMap?.[marker[1]];
+        return file ? (
+          <FileChip key={`${keyPrefix}-file-${marker[1]}-${index}`} file={file} />
+        ) : null;
+      }
+      return <span key={`${keyPrefix}-text-${index}`}>{part}</span>;
+    })
+    .filter((part) => part !== null);
+}
+
 function render_text(
   chu: string,
   fileMap?: Record<string, ProcedureDocument>,
 ): ReactNode {
-  // Một số câu trả lời chèn nguyên cụm "File mẫu: {{file:id}} — tên file".
-  // Gộp cả cụm thành một link để không còn chip "Mẫu" rời và tên file đứng riêng.
-  const attachment = chu.match(
-    /^(.*?)\s*File mẫu:\s*\{\{file:([^}]+)\}\}\s*[—–-]\s*(.+)$/,
-  );
-  if (attachment) {
-    const [, before, fileId, fileName] = attachment;
-    const file = fileMap?.[fileId];
-    if (file) {
-      return (
-        <>
-          {before ? render_text(before, fileMap) : null}
-          <FileChip file={file} fileName={fileName} />
-        </>
-      );
+  // Một dòng có thể chứa NHIỀU cụm "File mẫu: {{file:id}} — tên file".
+  // Không dùng regex neo `$` cho cả dòng: tên file sẽ nuốt luôn các marker phía sau.
+  const attachment = /File mẫu:\s*\{\{file:([^}]+)\}\}\s*[—–-]\s*(.*?)(?=\s+File mẫu:|$)/g;
+  const nodes: ReactNode[] = [];
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  let index = 0;
+
+  while ((match = attachment.exec(chu)) !== null) {
+    if (match.index > cursor) {
+      nodes.push(...render_inline(chu.slice(cursor, match.index), fileMap, `before-${index}`));
     }
+
+    const fileId = match[1];
+    const fileName = match[2].trim();
+    const file = fileMap?.[fileId];
+    nodes.push(
+      file ? (
+        <FileChip key={`attachment-${fileId}-${index}`} file={file} fileName={fileName} />
+      ) : (
+        <span key={`attachment-text-${fileId}-${index}`}>{fileName}</span>
+      ),
+    );
+
+    cursor = attachment.lastIndex;
+    index += 1;
   }
 
-  const parts = chu.split(/(\*\*.+?\*\*|\{\{file:[^}]+\}\})/g);
-  if (parts.length === 1) return chu;
+  if (cursor < chu.length) {
+    nodes.push(...render_inline(chu.slice(cursor), fileMap, "tail"));
+  }
 
-  return parts.map((part, index) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={index}>{part.slice(2, -2)}</strong>;
-    }
-    const marker = part.match(/^\{\{file:([^}]+)\}\}$/);
-    if (marker) {
-      const file = fileMap?.[marker[1]];
-      return file ? <FileChip key={index} file={file} /> : null;
-    }
-    return part;
-  });
+  return nodes.length ? nodes : chu;
 }
 
 function dinh_dang(
